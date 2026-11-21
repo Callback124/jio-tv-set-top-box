@@ -62,9 +62,17 @@ object JioTvNetworkModule {
         "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36"
 
     fun streamWorkerHeaders(): Map<String, String> = mapOf(
-        "User-Agent" to MOBILE_CHROME_USER_AGENT,
-        "Accept" to "application/json"
+        "User-Agent" to MOBILE_CHROME_USER_AGENT
     )
+
+    fun createUncachedWorkerClient(): OkHttpClient {
+        return OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .build()
+    }
 
     fun webHeaders(): Map<String, String> = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",

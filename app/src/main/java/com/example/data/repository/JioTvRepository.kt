@@ -14,6 +14,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.CacheControl
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -34,7 +37,8 @@ sealed interface ApiLoadResult<out T> {
 class JioTvRepository(
     private val apiService: JioTvApiService = JioTvNetworkModule.createApiService(),
     private val moshi: Moshi = JioTvNetworkModule.createMoshi(),
-    val traceTracker: InitiatorChainTracker = InitiatorChainTracker()
+    val traceTracker: InitiatorChainTracker = InitiatorChainTracker(),
+    private val workerHttpClient: OkHttpClient = JioTvNetworkModule.createUncachedWorkerClient()
 ) {
     private val epgCache = ConcurrentHashMap<Pair<Int, Int>, List<TvProgram>>()
     private val discoveryMutex = Mutex()
@@ -704,151 +708,99 @@ class JioTvRepository(
             // and already carry direct playback URLs in channel.playbackInfo.
             if (channel.id < 1_000_000) {
                 try {
-                val response = apiService.fetchRawUrl(
-                    url = workerUrl,
-                    headers = JioTvNetworkModule.streamWorkerHeaders()
-                )
-                val duration = System.currentTimeMillis() - start
-                val rawBody = response.body()?.string().orEmpty()
+                    val request = Request.Builder()
+                        .url(workerUrl)
+                        .cacheControl(CacheControl.FORCE_NETWORK)
+                        .apply {
+                            JioTvNetworkModule.streamWorkerHeaders().forEach { (k, v) ->
+                                header(k, v)
+                            }
+                        }
+                        .get()
+                        .build()
 
-                if (response.isSuccessful && rawBody.isNotBlank()) {
-                    val parsedInfo = parseWorkerPlaybackResponse(rawBody)
-                    if (parsedInfo != null) {
-                        workerInfo = parsedInfo
-                        traceTracker.record(
-                            initiator = "ExoPlayer -> Channel #${channel.id}",
-                            endpointLabel = "Stream Play Worker",
-                            url = workerUrl,
-                            statusCode = response.code(),
-                            durationMs = duration,
-                            contentType = response.headers()["Content-Type"],
-                            summary = buildString {
-                                append("Resolved live stream for ${channel.name}")
-                                if (parsedInfo.clearKeyPairs.isNotEmpty()) {
-                                    append(" • ${parsedInfo.clearKeyPairs.size} ClearKey(s)")
-                                }
-                                if (parsedInfo.cookie.isNotBlank()) {
-                                    append(" • Cookie ready")
-                                }
-                            },
-                            rawSnippet = rawBody.take(1400),
-                            isSuccess = true
-                        )
-                    } else {
-                        traceTracker.record(
-                            initiator = "ExoPlayer -> Channel #${channel.id}",
-                            endpointLabel = "Stream Play Worker",
-                            url = workerUrl,
-                            statusCode = response.code(),
-                            durationMs = duration,
-                            contentType = response.headers()["Content-Type"],
-                            summary = "Worker returned JSON without playable URL",
-                            rawSnippet = rawBody.take(1000),
-                            isSuccess = false
-                        )
+                    workerHttpClient.newCall(request).execute().use { response ->
+                        val duration = System.currentTimeMillis() - start
+                        val rawBody = response.body?.string().orEmpty()
+                        val contentType = response.header("Content-Type")
+
+                        if (response.isSuccessful && rawBody.isNotBlank()) {
+                            val parsedInfo = parseWorkerPlaybackResponse(rawBody)
+                            if (parsedInfo != null) {
+                                workerInfo = parsedInfo
+                                traceTracker.record(
+                                    initiator = "ExoPlayer -> Channel #${channel.id}",
+                                    endpointLabel = "Stream Play Worker",
+                                    url = workerUrl,
+                                    statusCode = response.code,
+                                    durationMs = duration,
+                                    contentType = contentType,
+                                    summary = buildString {
+                                        append("Resolved live stream for ${channel.name}")
+                                        if (parsedInfo.clearKeyPairs.isNotEmpty()) {
+                                            append(" • ${parsedInfo.clearKeyPairs.size} ClearKey(s)")
+                                        }
+                                        if (parsedInfo.cookie.isNotBlank()) {
+                                            append(" • Cookie ready")
+                                        }
+                                    },
+                                    rawSnippet = rawBody.take(1400),
+                                    isSuccess = true
+                                )
+                            } else {
+                                traceTracker.record(
+                                    initiator = "ExoPlayer -> Channel #${channel.id}",
+                                    endpointLabel = "Stream Play Worker",
+                                    url = workerUrl,
+                                    statusCode = response.code,
+                                    durationMs = duration,
+                                    contentType = contentType,
+                                    summary = "Worker returned JSON without playable URL",
+                                    rawSnippet = rawBody.take(1000),
+                                    isSuccess = false
+                                )
+                            }
+                        } else {
+                            traceTracker.record(
+                                initiator = "ExoPlayer -> Channel #${channel.id}",
+                                endpointLabel = "Stream Play Worker",
+                                url = workerUrl,
+                                statusCode = response.code,
+                                durationMs = duration,
+                                contentType = contentType,
+                                summary = "HTTP ${response.code} resolving stream for #${channel.id}",
+                                rawSnippet = rawBody.take(900),
+                                isSuccess = false
+                            )
+                        }
                     }
-                } else {
-                    val errText = response.errorBody()?.string().orEmpty()
+                } catch (e: Exception) {
                     traceTracker.record(
                         initiator = "ExoPlayer -> Channel #${channel.id}",
                         endpointLabel = "Stream Play Worker",
                         url = workerUrl,
-                        statusCode = response.code(),
-                        durationMs = duration,
-                        contentType = response.headers()["Content-Type"],
-                        summary = "HTTP ${response.code()} resolving stream for #${channel.id}",
-                        rawSnippet = errText.ifBlank { rawBody }.take(900),
+                        statusCode = null,
+                        durationMs = System.currentTimeMillis() - start,
+                        contentType = null,
+                        summary = "Error: ${e.localizedMessage ?: "Worker request failed"}",
+                        rawSnippet = e.stackTraceToString().take(800),
                         isSuccess = false
                     )
                 }
-            } catch (e: Exception) {
-                traceTracker.record(
-                    initiator = "ExoPlayer -> Channel #${channel.id}",
-                    endpointLabel = "Stream Play Worker",
-                    url = workerUrl,
-                    statusCode = null,
-                    durationMs = System.currentTimeMillis() - start,
-                    contentType = null,
-                    summary = "Error: ${e.localizedMessage ?: "Worker request failed"}",
-                    rawSnippet = e.stackTraceToString().take(800),
-                    isSuccess = false
-                )
-            }
             }
 
-            val candidates = listOfNotNull(
-                workerInfo?.let { it to workerUrl },
-                channel.playbackInfo?.takeIf { it.streamUrl.isNotBlank() }?.let { it to "npoint playback feed" }
-            ).distinctBy { it.first.streamUrl }
+            // Pass fresh workerInfo (or fallback npoint playbackInfo) directly to ExoPlayer
+            // without extra pre-probe HTTP GETs on the MPD URL (which can trigger CDN/anti-bot checks).
+            val chosen = workerInfo?.let { it to workerUrl }
+                ?: channel.playbackInfo?.takeIf { it.streamUrl.isNotBlank() }?.let { it to "npoint playback feed" }
 
-            if (candidates.isEmpty()) {
+            if (chosen == null) {
                 return@withContext ApiLoadResult.Error(
                     "Unable to resolve live stream URL for ${channel.name} (#${channel.id})."
                 )
             }
 
-            var lastHttpCode: Int? = null
-            var lastErrorMsg: String? = null
-
-            for ((candidate, sourceLabel) in candidates) {
-                val probeHeaders = LinkedHashMap<String, String>()
-                candidate.headers.forEach { (k, v) ->
-                    if (!k.equals("user-agent", true) && !k.equals("cookie", true)) {
-                        probeHeaders[k] = v
-                    }
-                }
-                probeHeaders["User-Agent"] = candidate.userAgent.ifBlank {
-                    JioTvNetworkModule.MOBILE_CHROME_USER_AGENT
-                }
-                if (candidate.cookie.isNotBlank()) {
-                    probeHeaders["Cookie"] = candidate.cookie
-                }
-
-                val probeStart = System.currentTimeMillis()
-                try {
-                    val probeResp = apiService.probeStream(
-                        url = candidate.streamUrl,
-                        headers = probeHeaders
-                    )
-                    val probeCode = probeResp.code()
-                    val probeDuration = System.currentTimeMillis() - probeStart
-                    val contentType = probeResp.headers()["Content-Type"]
-                    probeResp.body()?.close()
-                    probeResp.errorBody()?.close()
-
-                    if (probeResp.isSuccessful) {
-                        return@withContext ApiLoadResult.Success(candidate, sourceLabel)
-                    } else {
-                        lastHttpCode = probeCode
-                        lastErrorMsg = when (probeCode) {
-                            451 -> "HTTP 451: JioTV CDN geo-restricted this stream (Indian IP required) or rejected the __hdnea__ token."
-                            403 -> "HTTP 403: Stream token expired or access denied for ${channel.name}."
-                            404 -> "HTTP 404: Stream manifest not found for ${channel.name} (#${channel.id})."
-                            else -> "Stream CDN returned HTTP $probeCode for ${channel.name}."
-                        }
-                        traceTracker.record(
-                            initiator = "Stream Probe -> Channel #${channel.id}",
-                            endpointLabel = "Manifest Check",
-                            url = candidate.streamUrl,
-                            statusCode = probeCode,
-                            durationMs = probeDuration,
-                            contentType = contentType,
-                            summary = lastErrorMsg,
-                            rawSnippet = "Source: $sourceLabel\nHTTP $probeCode",
-                            isSuccess = false
-                        )
-                    }
-                } catch (_: Exception) {
-                    // Network probe hiccup (e.g., transient socket timeout) — allow ExoPlayer to attempt playback directly
-                    return@withContext ApiLoadResult.Success(candidate, sourceLabel)
-                }
-            }
-
-            ApiLoadResult.Error(
-                message = lastErrorMsg ?: "Unable to open stream for ${channel.name}.",
-                httpCode = lastHttpCode,
-                isGeoBlocked = lastHttpCode == 451 || lastHttpCode == 403
-            )
+            ApiLoadResult.Success(chosen.first, chosen.second)
         }
 
     private fun parseExtraChannelsJson(rawJson: String): List<TvChannel> {
