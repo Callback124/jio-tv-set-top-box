@@ -36,6 +36,7 @@ import io.flutter.plugin.platform.PlatformView
 import org.json.JSONArray
 import org.json.JSONObject
 
+@OptIn(UnstableApi::class)
 class Media3PlayerView(
     private val appContext: Context,
     params: Map<String, Any?>,
@@ -79,7 +80,6 @@ class Media3PlayerView(
         playerView.isFocusableInTouchMode = true
         playerView.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
         playerView.keepScreenOn = true
-        @OptIn(UnstableApi::class)
         playerView.setControllerAnimationEnabled(false)
         playerView.setControllerVisibilityListener(
             PlayerView.ControllerVisibilityListener { visibility ->
