@@ -107,6 +107,9 @@ jobs:
       - name: Bundle Jio loader asset
         run: |
           mkdir -p assets/images
+          if [ -f ../public/assets/aistudio/jio_b70b9fac.svg ]; then
+            cp ../public/assets/aistudio/jio_b70b9fac.svg assets/images/jio_logo.svg
+          fi
           if [ -f ../public/assets/aistudio/JPEG_Download_Jio-Logo-Colour-Navi-Midnight_c9b3d304.jpg ]; then
             cp ../public/assets/aistudio/JPEG_Download_Jio-Logo-Colour-Navi-Midnight_c9b3d304.jpg assets/images/jio_loader.jpg
           fi

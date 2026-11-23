@@ -9,6 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_svg: ^2.0.10+1
   http: ^1.2.2
   cached_network_image: ^3.4.1
 

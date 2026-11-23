@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:http/http.dart' as http;
 
 class AnasTvApp extends StatefulWidget {
@@ -364,26 +365,19 @@ class _BrandCircularLoader extends StatelessWidget {
       child: Stack(
         alignment: Alignment.center,
         children: [
-          ClipOval(
-            child: SizedBox(
+          Container(
+            width: innerSize,
+            height: innerSize,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              shape: BoxShape.circle,
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: SvgPicture.asset(
+              'assets/images/jio_logo.svg',
               width: innerSize,
               height: innerSize,
-              child: Image.asset(
-                'assets/images/jio_loader.jpg',
-                fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => Container(
-                  color: const Color(0xFF06068A),
-                  alignment: Alignment.center,
-                  child: const Text(
-                    'Jio',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 22,
-                    ),
-                  ),
-                ),
-              ),
+              fit: BoxFit.cover,
             ),
           ),
           SizedBox(
@@ -451,6 +445,12 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
   bool loading = true;
   String? error;
 
+  Timer? _zeroHoldTimer;
+  bool _openedSearchOnHold = false;
+  bool _searchOpen = false;
+  double _dragDeltaX = 0;
+  DateTime? _lastSubScreenReturnAt;
+
   int _int(dynamic value, [int fallback = 0]) =>
       int.tryParse(value?.toString() ?? '') ?? fallback;
 
@@ -493,6 +493,7 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
 
   @override
   void dispose() {
+    _zeroHoldTimer?.cancel();
     _tabScroll.dispose();
     _gridScroll.dispose();
     for (final n in _tabNodes.values) {
@@ -836,6 +837,82 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
     return KeyEventResult.ignored;
   }
 
+  bool _isZeroKey(KeyEvent event) {
+    final l = event.logicalKey;
+    final p = event.physicalKey;
+    return l == LogicalKeyboardKey.digit0 ||
+        l == LogicalKeyboardKey.numpad0 ||
+        p == PhysicalKeyboardKey.digit0 ||
+        p == PhysicalKeyboardKey.numpad0;
+  }
+
+  KeyEventResult _handleGlobalTvKey(FocusNode node, KeyEvent event) {
+    if (!widget.isTv || loading || error != null || allChannels.isEmpty) {
+      return KeyEventResult.ignored;
+    }
+    if (!_isZeroKey(event)) return KeyEventResult.ignored;
+
+    if (event is KeyDownEvent) {
+      if (!_openedSearchOnHold) {
+        _zeroHoldTimer?.cancel();
+        _zeroHoldTimer = Timer(const Duration(milliseconds: 500), () {
+          _openedSearchOnHold = true;
+          if (mounted) _openSearchScreen();
+        });
+      }
+      return KeyEventResult.handled;
+    }
+    if (event is KeyRepeatEvent) {
+      if (!_openedSearchOnHold) {
+        _zeroHoldTimer?.cancel();
+        _openedSearchOnHold = true;
+        _openSearchScreen();
+      }
+      return KeyEventResult.handled;
+    }
+    if (event is KeyUpEvent) {
+      _zeroHoldTimer?.cancel();
+      _openedSearchOnHold = false;
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  int _focusedRestoreIndex() {
+    for (final entry in _cardNodes.entries) {
+      if (entry.value.hasFocus) return entry.key;
+    }
+    return 0;
+  }
+
+  void _openSearchScreen() {
+    if (_searchOpen || allChannels.isEmpty) return;
+    _searchOpen = true;
+    final restoreIndex = _focusedRestoreIndex();
+    Navigator.of(context)
+        .push(PageRouteBuilder<void>(
+          transitionDuration: widget.isTv ? Duration.zero : const Duration(milliseconds: 220),
+          reverseTransitionDuration: widget.isTv ? Duration.zero : const Duration(milliseconds: 180),
+          pageBuilder: (_, __, ___) => AnasTvSearchScreen(channels: allChannels, isTv: widget.isTv),
+          transitionsBuilder: widget.isTv
+              ? (_, __, ___, child) => child
+              : (_, animation, __, child) => SlideTransition(
+                    position: Tween<Offset>(begin: const Offset(1, 0), end: Offset.zero)
+                        .animate(CurvedAnimation(parent: animation, curve: Curves.easeOut)),
+                    child: child,
+                  ),
+        ))
+        .then((_) {
+          _searchOpen = false;
+          _lastSubScreenReturnAt = DateTime.now();
+          if (widget.isTv && mounted) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _focusCard(restoreIndex);
+            });
+          }
+        });
+  }
+
   void _openChannel(TvChannel channel, {int? restoreCardIndex}) {
     Navigator.of(context)
         .push(PageRouteBuilder<void>(
@@ -844,6 +921,7 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
           pageBuilder: (_, __, ___) => AnasTvPlayerScreen(channel: channel, isTv: widget.isTv),
         ))
         .then((_) {
+          _lastSubScreenReturnAt = DateTime.now();
           if (widget.isTv && restoreCardIndex != null && mounted) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (mounted) _focusCard(restoreCardIndex);
@@ -859,16 +937,18 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
       builder: (context, constraints) {
         final width = constraints.maxWidth;
         final columns = widget.isTv ? 8 : (width >= 700 ? 6 : 4);
-        final gap = widget.isTv ? 14.0 : (width >= 700 ? 12.0 : 8.0);
+        final spacing = widget.isTv ? 7.0 : (width >= 700 ? 10.0 : 8.0);
         return GridView.builder(
           controller: _gridScroll,
           cacheExtent: 260,
           clipBehavior: Clip.none,
-          padding: EdgeInsets.fromLTRB(gap, gap, gap, gap + 8),
+          padding: widget.isTv
+              ? const EdgeInsets.fromLTRB(12, 10, 12, 14)
+              : EdgeInsets.fromLTRB(spacing, spacing, spacing, spacing + 8),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: columns,
-            mainAxisSpacing: gap,
-            crossAxisSpacing: gap,
+            mainAxisSpacing: spacing,
+            crossAxisSpacing: spacing,
             childAspectRatio: widget.isTv ? 0.88 : 0.86,
           ),
           itemCount: filtered.length,
@@ -888,83 +968,119 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
       },
     );
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF050505),
-      body: SafeArea(
-        child: Column(
-          children: [
-            if (!loading && error == null && filterTabs.length > 1)
-              Container(
-                height: 44,
-                width: double.infinity,
-                decoration: const BoxDecoration(
-                  color: Color(0xFF050505),
-                  border: Border(
-                    bottom: BorderSide(color: Color(0xFF1F1F1F), width: 1),
-                  ),
-                ),
-                child: ListView.builder(
-                  controller: _tabScroll,
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  itemCount: filterTabs.length,
-                  itemBuilder: (context, index) {
-                    final label = filterTabs[index];
-                    final selected = label.toLowerCase() == selectedTab.toLowerCase();
-                    return _CategoryTab(
-                      label: label.toUpperCase(),
-                      selected: selected,
-                      isTv: widget.isTv,
-                      focusNode: widget.isTv ? _tabNode(index) : null,
-                      onKeyEvent: widget.isTv ? (node, event) => _handleTabKey(index, event) : null,
-                      onTap: () => _selectTab(label),
-                    );
-                  },
-                ),
-              ),
-            Expanded(
-              child: ClipRect(
-                child: loading
-                    ? const Center(child: _BrandCircularLoader(size: 80))
-                    : error != null
-                        ? Center(
-                            child: Padding(
-                              padding: const EdgeInsets.all(24),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(Icons.wifi_off_rounded, color: Color(0xFFE65312), size: 48),
-                                  const SizedBox(height: 12),
-                                  Text(error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white)),
-                                  const SizedBox(height: 16),
-                                  FilledButton(onPressed: _loadChannels, child: const Text('Retry')),
-                                ],
-                              ),
-                            ),
-                          )
-                        : filtered.isEmpty
-                            ? Center(
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Text('Koi channel nahi mila', style: TextStyle(color: Colors.white)),
-                                    TextButton(
-                                      onPressed: () => setState(() => selectedTab = 'ALL'),
-                                      child: const Text('Show All'),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        final lastReturn = _lastSubScreenReturnAt;
+        if (lastReturn != null &&
+            DateTime.now().difference(lastReturn) < const Duration(milliseconds: 700)) {
+          return;
+        }
+        SystemNavigator.pop();
+      },
+      child: Focus(
+        canRequestFocus: false,
+        skipTraversal: true,
+        onKeyEvent: widget.isTv ? _handleGlobalTvKey : null,
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onHorizontalDragStart: !widget.isTv ? (_) => _dragDeltaX = 0 : null,
+          onHorizontalDragUpdate: !widget.isTv ? (details) => _dragDeltaX += details.delta.dx : null,
+          onHorizontalDragEnd: !widget.isTv
+              ? (details) {
+                  if ((details.primaryVelocity ?? 0) < -240 || _dragDeltaX < -75) {
+                    _openSearchScreen();
+                  }
+                }
+              : null,
+          child: Scaffold(
+            backgroundColor: const Color(0xFF050505),
+            body: SafeArea(
+              child: Column(
+                children: [
+                  if (!loading && error == null && filterTabs.length > 1)
+                    Padding(
+                      padding: EdgeInsets.only(top: widget.isTv ? 10 : 0),
+                      child: Container(
+                        height: widget.isTv ? 46 : 44,
+                        width: double.infinity,
+                        decoration: const BoxDecoration(
+                          color: Color(0xFF050505),
+                          border: Border(
+                            bottom: BorderSide(color: Color(0xFF1F1F1F), width: 1),
+                          ),
+                        ),
+                        child: ListView.builder(
+                          controller: _tabScroll,
+                          scrollDirection: Axis.horizontal,
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                          itemCount: filterTabs.length,
+                          itemBuilder: (context, index) {
+                            final label = filterTabs[index];
+                            final selected = label.toLowerCase() == selectedTab.toLowerCase();
+                            return _CategoryTab(
+                              label: label.toUpperCase(),
+                              selected: selected,
+                              isTv: widget.isTv,
+                              focusNode: widget.isTv ? _tabNode(index) : null,
+                              onKeyEvent:
+                                  widget.isTv ? (node, event) => _handleTabKey(index, event) : null,
+                              onTap: () => _selectTab(label),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  Expanded(
+                    child: ClipRect(
+                      child: loading
+                          ? const Center(child: _BrandCircularLoader(size: 80))
+                          : error != null
+                              ? Center(
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(24),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.wifi_off_rounded, color: Color(0xFFE65312), size: 48),
+                                        const SizedBox(height: 12),
+                                        Text(error!,
+                                            textAlign: TextAlign.center,
+                                            style: const TextStyle(color: Colors.white)),
+                                        const SizedBox(height: 16),
+                                        FilledButton(onPressed: _loadChannels, child: const Text('Retry')),
+                                      ],
                                     ),
-                                  ],
-                                ),
-                              )
-                            : widget.isTv
-                                ? gridWidget
-                                : RefreshIndicator(
-                                    color: const Color(0xFFE65312),
-                                    onRefresh: _loadChannels,
-                                    child: gridWidget,
                                   ),
+                                )
+                              : filtered.isEmpty
+                                  ? Center(
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Text('Koi channel nahi mila',
+                                              style: TextStyle(color: Colors.white)),
+                                          TextButton(
+                                            onPressed: () => setState(() => selectedTab = 'ALL'),
+                                            child: const Text('Show All'),
+                                          ),
+                                        ],
+                                      ),
+                                    )
+                                  : widget.isTv
+                                      ? gridWidget
+                                      : RefreshIndicator(
+                                          color: const Color(0xFFE65312),
+                                          onRefresh: _loadChannels,
+                                          child: gridWidget,
+                                        ),
+                    ),
+                  ),
+                ],
               ),
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -1020,7 +1136,7 @@ class _CategoryTabState extends State<_CategoryTab> {
         behavior: HitTestBehavior.opaque,
         onTap: widget.onTap,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
+          padding: EdgeInsets.fromLTRB(16, widget.isTv ? 4 : 0, 16, 0),
           alignment: Alignment.center,
           decoration: BoxDecoration(
             color: showTvFocus ? const Color(0xFF23262F) : Colors.transparent,
@@ -1042,6 +1158,360 @@ class _CategoryTabState extends State<_CategoryTab> {
               color: active
                   ? const Color(0xFFE65312)
                   : (showTvFocus ? Colors.white : const Color(0xFFD0D4DC)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FocusSearchGridIntent extends Intent {
+  const _FocusSearchGridIntent();
+}
+
+class AnasTvSearchScreen extends StatefulWidget {
+  final List<TvChannel> channels;
+  final bool isTv;
+
+  const AnasTvSearchScreen({
+    super.key,
+    required this.channels,
+    required this.isTv,
+  });
+
+  @override
+  State<AnasTvSearchScreen> createState() => _AnasTvSearchScreenState();
+}
+
+class _AnasTvSearchScreenState extends State<AnasTvSearchScreen> {
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
+  final ScrollController _gridScroll = ScrollController();
+  final Map<int, FocusNode> _cardNodes = {};
+
+  String _query = '';
+  bool _isExiting = false;
+  bool _searchFocused = false;
+  double _dragDeltaX = 0;
+
+  FocusNode _cardNode(int index) => _cardNodes.putIfAbsent(index, () => FocusNode());
+
+  @override
+  void initState() {
+    super.initState();
+    _searchFocus.addListener(() {
+      if (mounted) setState(() => _searchFocused = _searchFocus.hasFocus);
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _searchFocus.dispose();
+    _gridScroll.dispose();
+    for (final n in _cardNodes.values) {
+      n.dispose();
+    }
+    super.dispose();
+  }
+
+  List<TvChannel> get _results {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return widget.channels;
+    final starts = <TvChannel>[];
+    final contains = <TvChannel>[];
+    for (final c in widget.channels) {
+      final lower = c.name.toLowerCase();
+      if (lower.startsWith(q)) {
+        starts.add(c);
+      } else if (lower.contains(q)) {
+        contains.add(c);
+      }
+    }
+    return [...starts, ...contains];
+  }
+
+  void _focusCard(int targetIndex) {
+    final node = _cardNodes[targetIndex];
+    if (node != null && node.canRequestFocus && node.context != null) {
+      node.requestFocus();
+      return;
+    }
+    if (targetIndex == 0 && _gridScroll.hasClients) {
+      _gridScroll.jumpTo(0);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final n = _cardNodes[0];
+        if (n != null && n.canRequestFocus) n.requestFocus();
+      });
+    }
+  }
+
+  KeyEventResult _handleCardKey(int index, int columns, int totalCount, KeyEvent event) {
+    if (!widget.isTv || event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    final row = index ~/ columns;
+    final col = index % columns;
+    final isFirstRowLastItem = row == 0 && (col == columns - 1 || index == totalCount - 1);
+
+    if (key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter) {
+      final results = _results;
+      if (index >= 0 && index < results.length) {
+        _openChannel(results[index], restoreCardIndex: index);
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      if (row == 0 && col == 0) {
+        _searchFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (index > 0) _focusCard(index - 1);
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowRight) {
+      if (isFirstRowLastItem) {
+        _searchFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (index + 1 < totalCount) _focusCard(index + 1);
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowUp) {
+      if (row == 0) {
+        _searchFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      _focusCard(index - columns);
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowDown) {
+      if (index + columns < totalCount) {
+        _focusCard(index + columns);
+      } else if ((row + 1) * columns < totalCount) {
+        _focusCard(totalCount - 1);
+      }
+      return KeyEventResult.handled;
+    }
+
+    return KeyEventResult.ignored;
+  }
+
+  void _openChannel(TvChannel channel, {int? restoreCardIndex}) {
+    Navigator.of(context)
+        .push(PageRouteBuilder<void>(
+          transitionDuration: widget.isTv ? Duration.zero : const Duration(milliseconds: 180),
+          reverseTransitionDuration: Duration.zero,
+          pageBuilder: (_, __, ___) => AnasTvPlayerScreen(channel: channel, isTv: widget.isTv),
+        ))
+        .then((_) {
+          if (widget.isTv && restoreCardIndex != null && mounted) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _focusCard(restoreCardIndex);
+            });
+          }
+        });
+  }
+
+  void _exitSearch() {
+    if (_isExiting) return;
+    _isExiting = true;
+    FocusScope.of(context).unfocus();
+    if (mounted && Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final results = _results;
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _exitSearch();
+      },
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onHorizontalDragStart: !widget.isTv ? (_) => _dragDeltaX = 0 : null,
+        onHorizontalDragUpdate: !widget.isTv ? (details) => _dragDeltaX += details.delta.dx : null,
+        onHorizontalDragEnd: !widget.isTv
+            ? (details) {
+                if ((details.primaryVelocity ?? 0) > 260 || _dragDeltaX > 80) {
+                  _exitSearch();
+                }
+              }
+            : null,
+        child: Scaffold(
+          backgroundColor: const Color(0xFF050505),
+          body: SafeArea(
+            child: Column(
+              children: [
+                Padding(
+                  padding: EdgeInsets.only(top: widget.isTv ? 10 : 0),
+                  child: Container(
+                    height: widget.isTv ? 46 : 44,
+                    width: double.infinity,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF050505),
+                      border: Border(
+                        bottom: BorderSide(color: Color(0xFF1F1F1F), width: 1),
+                      ),
+                    ),
+                    alignment: Alignment.center,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: widget.isTv ? 460 : double.infinity,
+                      ),
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: widget.isTv ? 16 : 12,
+                          vertical: 5,
+                        ),
+                        child: Shortcuts(
+                          shortcuts: widget.isTv
+                              ? const <ShortcutActivator, Intent>{
+                                  SingleActivator(LogicalKeyboardKey.arrowDown):
+                                      _FocusSearchGridIntent(),
+                                }
+                              : const <ShortcutActivator, Intent>{},
+                          child: Actions(
+                            actions: <Type, Action<Intent>>{
+                              _FocusSearchGridIntent: CallbackAction<_FocusSearchGridIntent>(
+                                onInvoke: (_) {
+                                  if (_results.isNotEmpty) _focusCard(0);
+                                  return null;
+                                },
+                              ),
+                            },
+                            child: Container(
+                              height: 34,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF14161D),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: _searchFocused
+                                      ? const Color(0xFFE65312)
+                                      : const Color(0xFF282B36),
+                                  width: 1.1,
+                                ),
+                              ),
+                              padding: const EdgeInsets.symmetric(horizontal: 10),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.search_rounded,
+                                    size: 18,
+                                    color: _searchFocused
+                                        ? const Color(0xFFE65312)
+                                        : const Color(0xFF9EA4B3),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _searchController,
+                                      focusNode: _searchFocus,
+                                      autofocus: true,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 13.5,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                      cursorColor: const Color(0xFFE65312),
+                                      textInputAction: TextInputAction.search,
+                                      decoration: const InputDecoration(
+                                        hintText: 'Search channels...',
+                                        hintStyle: TextStyle(
+                                          color: Color(0xFF7C8292),
+                                          fontSize: 13,
+                                        ),
+                                        border: InputBorder.none,
+                                        isDense: true,
+                                        contentPadding: EdgeInsets.zero,
+                                      ),
+                                      onChanged: (value) {
+                                        setState(() => _query = value);
+                                        if (_gridScroll.hasClients) _gridScroll.jumpTo(0);
+                                      },
+                                    ),
+                                  ),
+                                  if (_query.isNotEmpty)
+                                    GestureDetector(
+                                      onTap: () {
+                                        _searchController.clear();
+                                        setState(() => _query = '');
+                                      },
+                                      child: const Padding(
+                                        padding: EdgeInsets.only(left: 6),
+                                        child: Icon(
+                                          Icons.close_rounded,
+                                          size: 17,
+                                          color: Color(0xFF9EA4B3),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: ClipRect(
+                    child: results.isEmpty
+                        ? const Center(
+                            child: Text(
+                              'Koi channel nahi mila',
+                              style: TextStyle(color: Colors.white),
+                            ),
+                          )
+                        : LayoutBuilder(
+                            builder: (context, constraints) {
+                              final width = constraints.maxWidth;
+                              final columns = widget.isTv ? 8 : (width >= 700 ? 6 : 4);
+                              final spacing = widget.isTv ? 7.0 : (width >= 700 ? 10.0 : 8.0);
+                              return GridView.builder(
+                                controller: _gridScroll,
+                                cacheExtent: 260,
+                                clipBehavior: Clip.none,
+                                padding: widget.isTv
+                                    ? const EdgeInsets.fromLTRB(12, 10, 12, 14)
+                                    : EdgeInsets.fromLTRB(spacing, spacing, spacing, spacing + 8),
+                                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: columns,
+                                  mainAxisSpacing: spacing,
+                                  crossAxisSpacing: spacing,
+                                  childAspectRatio: widget.isTv ? 0.88 : 0.86,
+                                ),
+                                itemCount: results.length,
+                                itemBuilder: (context, index) => RepaintBoundary(
+                                  child: _ChannelCard(
+                                    channel: results[index],
+                                    isTv: widget.isTv,
+                                    focusNode: widget.isTv ? _cardNode(index) : null,
+                                    onKeyEvent: widget.isTv
+                                        ? (node, event) =>
+                                            _handleCardKey(index, columns, results.length, event)
+                                        : null,
+                                    onTap: () =>
+                                        _openChannel(results[index], restoreCardIndex: index),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ),
+              ],
             ),
           ),
         ),
@@ -1205,7 +1675,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     if (!widget.isTv || event is! KeyDownEvent) return KeyEventResult.ignored;
     final key = event.logicalKey;
 
-    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+    if (key == LogicalKeyboardKey.escape) {
       _handleBack();
       return KeyEventResult.handled;
     }
