@@ -127,6 +127,7 @@ class _ChannelMatcher {
   static final RegExp _multiSpace = RegExp(r'\s+');
   static final RegExp _bracketed = RegExp(r'[\(\[\{].*?[\)\]\}]');
   static final RegExp _sonySportsTen = RegExp(r'\bsony\s+sports?\s+ten\b');
+  static final RegExp _sonySportsNum = RegExp(r'\bsony\s+sports?\s+(?=[1-5]\b)');
   static final RegExp _sonyEnt = RegExp(r'\bsony\s+entertainment\s+television\b');
   static final RegExp _joinedDigits = RegExp(r'\b(ten|max|sports|sab|wah|mix|pal|pix)(\d+)\b');
 
@@ -136,6 +137,7 @@ class _ChannelMatcher {
     s = s.replaceAll(_nonAlnum, ' ').replaceAll(_multiSpace, ' ').trim();
     s = s.replaceAllMapped(_joinedDigits, (m) => '${m[1]} ${m[2]}');
     s = s.replaceAll(_sonySportsTen, 'sony ten');
+    s = s.replaceAll(_sonySportsNum, 'sony ten ');
     s = s.replaceAll(_sonyEnt, 'set');
     if (s == 'sab tv' || s == 'sab') {
       s = 'sony sab';
@@ -160,11 +162,46 @@ class _ChannelMatcher {
     return joined.isNotEmpty ? joined : exact;
   }
 
+  static String langNeutralSdKey(String name) {
+    final exact = exactKey(name);
+    if (exact.isEmpty) return '';
+    final tokens = exact.split(' ').where((t) =>
+        t.isNotEmpty &&
+        t != 'hindi' &&
+        t != 'sd' &&
+        t != 'streamx' &&
+        t != 'sonyliv' &&
+        t != 'backup');
+    final joined = tokens.join(' ').trim();
+    return joined.isNotEmpty ? joined : exact;
+  }
+
   static String baseKey(String name) {
     final exact = exactKey(name);
     if (exact.isEmpty) return '';
     final tokens = exact.split(' ').where((t) =>
         t.isNotEmpty &&
+        t != 'sd' &&
+        t != 'hd' &&
+        t != 'fhd' &&
+        t != 'uhd' &&
+        t != '4k' &&
+        t != '1080p' &&
+        t != '720p' &&
+        t != 'hevc' &&
+        t != 'streamx' &&
+        t != 'sonyliv' &&
+        t != 'backup');
+    final joined = tokens.join(' ').trim();
+    return joined.isNotEmpty ? joined : exact;
+  }
+
+  static String langNeutralBaseKey(String name) {
+    final exact = exactKey(name);
+    if (exact.isEmpty) return '';
+    final tokens = exact.split(' ').where((t) =>
+        t.isNotEmpty &&
+        t != 'hindi' &&
         t != 'sd' &&
         t != 'hd' &&
         t != 'fhd' &&
@@ -965,43 +1002,46 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
         throw Exception(_debugErrors.isEmpty ? 'Both APIs returned zero channels.' : _debugErrors.join('\n'));
       }
 
-      // Build title indexes so ID-less / logo-less channels (e.g. Sony Live | StreamX)
-      // share official logos & EPG program data from matching titles (incl. "Sony Max" <-> "Sony Max SD").
+      // Build title indexes so ID-less / logo-less / Hindi-aliased channels (e.g. Sony Live | StreamX)
+      // share official logos & EPG program data from matching titles (incl. Sony Yay <-> Sony YAY! Hindi, Ten 3 <-> Sports Ten 3 Hindi).
       final exactEpgMap = <String, TvChannel>{};
       final sdEpgMap = <String, TvChannel>{};
+      final langSdEpgMap = <String, TvChannel>{};
       final baseEpgMap = <String, TvChannel>{};
+      final langBaseEpgMap = <String, TvChannel>{};
       final exactLogoMap = <String, TvChannel>{};
       final sdLogoMap = <String, TvChannel>{};
+      final langSdLogoMap = <String, TvChannel>{};
       final baseLogoMap = <String, TvChannel>{};
+      final langBaseLogoMap = <String, TvChannel>{};
+
+      void putLogoCandidate(Map<String, TvChannel> map, String key, TvChannel ch) {
+        if (key.isEmpty) return;
+        final cur = map[key];
+        if (cur == null || (cur.id >= 1000000 && ch.id < 1000000)) {
+          map[key] = ch;
+        }
+      }
 
       for (final ch in sorted) {
         final ek = _ChannelMatcher.exactKey(ch.name);
         final sk = _ChannelMatcher.sdEquivKey(ch.name);
+        final lk = _ChannelMatcher.langNeutralSdKey(ch.name);
         final bk = _ChannelMatcher.baseKey(ch.name);
+        final lbk = _ChannelMatcher.langNeutralBaseKey(ch.name);
         if (ch.id < 1000000) {
           if (ek.isNotEmpty) exactEpgMap.putIfAbsent(ek, () => ch);
           if (sk.isNotEmpty) sdEpgMap.putIfAbsent(sk, () => ch);
+          if (lk.isNotEmpty) langSdEpgMap.putIfAbsent(lk, () => ch);
           if (bk.isNotEmpty) baseEpgMap.putIfAbsent(bk, () => ch);
+          if (lbk.isNotEmpty) langBaseEpgMap.putIfAbsent(lbk, () => ch);
         }
         if (ch.logo.trim().isNotEmpty) {
-          if (ek.isNotEmpty) {
-            final cur = exactLogoMap[ek];
-            if (cur == null || (cur.id >= 1000000 && ch.id < 1000000)) {
-              exactLogoMap[ek] = ch;
-            }
-          }
-          if (sk.isNotEmpty) {
-            final cur = sdLogoMap[sk];
-            if (cur == null || (cur.id >= 1000000 && ch.id < 1000000)) {
-              sdLogoMap[sk] = ch;
-            }
-          }
-          if (bk.isNotEmpty) {
-            final cur = baseLogoMap[bk];
-            if (cur == null || (cur.id >= 1000000 && ch.id < 1000000)) {
-              baseLogoMap[bk] = ch;
-            }
-          }
+          putLogoCandidate(exactLogoMap, ek, ch);
+          putLogoCandidate(sdLogoMap, sk, ch);
+          putLogoCandidate(langSdLogoMap, lk, ch);
+          putLogoCandidate(baseLogoMap, bk, ch);
+          putLogoCandidate(langBaseLogoMap, lbk, ch);
         }
       }
 
@@ -1009,12 +1049,22 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
         TvChannel target,
         Map<String, TvChannel> exactMap,
         Map<String, TvChannel> sdMap,
+        Map<String, TvChannel> langSdMap,
         Map<String, TvChannel> baseMap,
+        Map<String, TvChannel> langBaseMap,
       ) {
         final ek = _ChannelMatcher.exactKey(target.name);
         final sk = _ChannelMatcher.sdEquivKey(target.name);
+        final lk = _ChannelMatcher.langNeutralSdKey(target.name);
         final bk = _ChannelMatcher.baseKey(target.name);
-        for (final m in [exactMap[ek], sdMap[sk], baseMap[bk]]) {
+        final lbk = _ChannelMatcher.langNeutralBaseKey(target.name);
+        for (final m in [
+          exactMap[ek],
+          sdMap[sk],
+          langSdMap[lk],
+          baseMap[bk],
+          langBaseMap[lbk],
+        ]) {
           if (m != null && m.id != target.id) return m;
         }
         return null;
@@ -1023,9 +1073,10 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
       final enriched = List<TvChannel>.generate(sorted.length, (index) {
         final ch = sorted[index];
         final epgDonor = ch.id >= 1000000
-            ? findMatch(ch, exactEpgMap, sdEpgMap, baseEpgMap)
+            ? findMatch(ch, exactEpgMap, sdEpgMap, langSdEpgMap, baseEpgMap, langBaseEpgMap)
             : null;
-        final logoDonor = findMatch(ch, exactLogoMap, sdLogoMap, baseLogoMap);
+        final logoDonor =
+            findMatch(ch, exactLogoMap, sdLogoMap, langSdLogoMap, baseLogoMap, langBaseLogoMap);
 
         var nextLogo = ch.logo;
         var nextFallback = ch.fallbackLogo;
@@ -2177,13 +2228,17 @@ class _EpgService {
   static final Map<int, int> _epgDonorIdFor = {};
   static final Map<String, List<TvChannel>> _byExact = {};
   static final Map<String, List<TvChannel>> _bySdEquiv = {};
+  static final Map<String, List<TvChannel>> _byLangSd = {};
   static final Map<String, List<TvChannel>> _byBase = {};
+  static final Map<String, List<TvChannel>> _byLangBase = {};
 
   static void registerChannels(List<TvChannel> channels) {
     _epgDonorIdFor.clear();
     _byExact.clear();
     _bySdEquiv.clear();
+    _byLangSd.clear();
     _byBase.clear();
+    _byLangBase.clear();
     for (final ch in channels) {
       if (ch.epgChannelId != null && ch.epgChannelId! < 1000000) {
         _epgDonorIdFor[ch.id] = ch.epgChannelId!;
@@ -2191,10 +2246,14 @@ class _EpgService {
       if (ch.id >= 1000000) continue;
       final ek = _ChannelMatcher.exactKey(ch.name);
       final sk = _ChannelMatcher.sdEquivKey(ch.name);
+      final lk = _ChannelMatcher.langNeutralSdKey(ch.name);
       final bk = _ChannelMatcher.baseKey(ch.name);
+      final lbk = _ChannelMatcher.langNeutralBaseKey(ch.name);
       if (ek.isNotEmpty) _byExact.putIfAbsent(ek, () => []).add(ch);
       if (sk.isNotEmpty) _bySdEquiv.putIfAbsent(sk, () => []).add(ch);
+      if (lk.isNotEmpty) _byLangSd.putIfAbsent(lk, () => []).add(ch);
       if (bk.isNotEmpty) _byBase.putIfAbsent(bk, () => []).add(ch);
+      if (lbk.isNotEmpty) _byLangBase.putIfAbsent(lbk, () => []).add(ch);
     }
   }
 
@@ -2212,8 +2271,16 @@ class _EpgService {
 
     final ek = _ChannelMatcher.exactKey(ch.name);
     final sk = _ChannelMatcher.sdEquivKey(ch.name);
+    final lk = _ChannelMatcher.langNeutralSdKey(ch.name);
     final bk = _ChannelMatcher.baseKey(ch.name);
-    for (final list in [_byExact[ek], _bySdEquiv[sk], _byBase[bk]]) {
+    final lbk = _ChannelMatcher.langNeutralBaseKey(ch.name);
+    for (final list in [
+      _byExact[ek],
+      _bySdEquiv[sk],
+      _byLangSd[lk],
+      _byBase[bk],
+      _byLangBase[lbk],
+    ]) {
       if (list == null) continue;
       for (final donor in list) {
         addId(donor.id);
@@ -2440,6 +2507,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     Shadow(color: Color(0xCC000000), blurRadius: 2, offset: Offset(0, 1)),
   ];
   static const MethodChannel _texChannel = MethodChannel('anas_tv/texture_player');
+  static const MethodChannel _deviceChannel = MethodChannel('anas_tv/device');
 
   final FocusNode _playerFocus = FocusNode();
 
@@ -2517,6 +2585,9 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     _scheduleBannerAutoHide();
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!widget.isTv) {
+        await _deviceChannel.invokeMethod('setDisplayCutoutMode', true).catchError((_) {});
+      }
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
       if (!mounted) return;
       await SystemChrome.setPreferredOrientations(const [
@@ -2587,6 +2658,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     _texChannel.invokeMethod('stop').catchError((_) {});
     _playerFocus.dispose();
     if (!widget.isTv) {
+      _deviceChannel.invokeMethod('setDisplayCutoutMode', false).catchError((_) {});
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       SystemChrome.setPreferredOrientations(const [DeviceOrientation.portraitUp]);
     }
@@ -3102,6 +3174,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     _digitCommitTimer?.cancel();
     _texChannel.invokeMethod('stop').catchError((_) {});
     if (!widget.isTv) {
+      await _deviceChannel.invokeMethod('setDisplayCutoutMode', false).catchError((_) {});
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       await SystemChrome.setPreferredOrientations(const [DeviceOrientation.portraitUp]);
     }
@@ -3463,21 +3536,6 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                         bottom: false,
                         child: Row(
                           children: [
-                            if (!widget.isTv) ...[
-                              InkWell(
-                                borderRadius: BorderRadius.circular(20),
-                                onTap: _exitPlayer,
-                                child: Container(
-                                  padding: const EdgeInsets.all(6),
-                                  decoration: BoxDecoration(
-                                    color: Colors.black.withValues(alpha: 0.25),
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: const Icon(Icons.arrow_back, color: Colors.white, size: 20),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                            ],
                             Text(
                               _clockHeaderText(),
                               style: TextStyle(
@@ -3512,31 +3570,31 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                     left: 0,
                     right: 0,
                     bottom: 0,
-                    child: SafeArea(
-                      top: false,
-                      child: Stack(
-                        clipBehavior: Clip.none,
-                        alignment: Alignment.bottomLeft,
-                        children: [
-                          Positioned(
-                            left: 0,
-                            right: 0,
-                            top: stripTopOffset,
-                            bottom: 0,
-                            child: Container(
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  begin: Alignment.topCenter,
-                                  end: Alignment.bottomCenter,
-                                  colors: [
-                                    Colors.black.withValues(alpha: 0.10),
-                                    Colors.black.withValues(alpha: 0.20),
-                                  ],
-                                ),
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      alignment: Alignment.bottomLeft,
+                      children: [
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          top: stripTopOffset,
+                          bottom: 0,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [
+                                  Colors.black.withValues(alpha: 0.10),
+                                  Colors.black.withValues(alpha: 0.20),
+                                ],
                               ),
                             ),
                           ),
-                          Padding(
+                        ),
+                        SafeArea(
+                          top: false,
+                          child: Padding(
                             padding: EdgeInsets.fromLTRB(
                               compactLayout ? 14 : 28,
                               0,
@@ -3733,8 +3791,8 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                               ],
                             ),
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   ),
                 if (_openPicker != null) _buildStbTrackPickerOverlay(),
@@ -4173,9 +4231,7 @@ class _ChannelCardState extends State<_ChannelCard> {
                       height: logoSize,
                       child: Container(
                         decoration: BoxDecoration(
-                          color: widget.channel.logo.toLowerCase().contains('white')
-                              ? const Color(0xFF151924)
-                              : Colors.white,
+                          color: Colors.white,
                           shape: BoxShape.circle,
                           border: Border.all(
                             color: showTvFocus ? Colors.white : const Color(0xFFD94B0A),
@@ -4338,23 +4394,44 @@ class _ChannelLogo extends StatefulWidget {
 }
 
 class _ChannelLogoState extends State<_ChannelLogo> {
-  bool fallback = false;
+  int _attempt = 0;
 
   @override
   void didUpdateWidget(covariant _ChannelLogo oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.primaryUrl != widget.primaryUrl ||
         oldWidget.fallbackUrl != widget.fallbackUrl) {
-      fallback = false;
+      _attempt = 0;
     }
+  }
+
+  List<String> get _candidates {
+    final out = <String>[];
+    void addUrl(String raw) {
+      final clean = raw.trim();
+      if (clean.isNotEmpty && !out.contains(clean)) {
+        out.add(clean);
+      }
+    }
+
+    addUrl(widget.primaryUrl);
+    addUrl(widget.fallbackUrl);
+    if (widget.fallbackUrl.contains('jiotvimages.cdn.jio.com/')) {
+      addUrl(widget.fallbackUrl.replaceFirst(
+        'jiotvimages.cdn.jio.com/',
+        'jiotv.catchup.cdn.jio.com/',
+      ));
+    }
+    return out;
   }
 
   @override
   Widget build(BuildContext context) {
-    final url = fallback ? widget.fallbackUrl : widget.primaryUrl;
-    if (url.isEmpty) {
+    final urls = _candidates;
+    if (_attempt >= urls.length) {
       return const Center(child: Icon(Icons.tv_rounded, size: 28, color: Colors.grey));
     }
+    final url = urls[_attempt];
     return CachedNetworkImage(
       imageUrl: url,
       httpHeaders: _imageHeadersFor(url),
@@ -4365,9 +4442,9 @@ class _ChannelLogoState extends State<_ChannelLogo> {
       fadeOutDuration: Duration.zero,
       useOldImageOnUrlChange: true,
       errorWidget: (_, __, ___) {
-        if (!fallback && widget.fallbackUrl.isNotEmpty && widget.fallbackUrl != widget.primaryUrl) {
+        if (_attempt + 1 < urls.length) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) setState(() => fallback = true);
+            if (mounted) setState(() => _attempt++);
           });
         }
         return const Center(child: Icon(Icons.tv_rounded, size: 28, color: Colors.grey));
