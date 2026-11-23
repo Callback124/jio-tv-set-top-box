@@ -1570,111 +1570,23 @@ class _StbProgram {
   final String timeLabel;
   final String description;
   final String posterUrl;
+  final String fallbackPosterUrl;
   final double progress;
+  final bool isLiveNow;
 
   const _StbProgram({
     required this.title,
     required this.timeLabel,
     required this.description,
     required this.posterUrl,
+    required this.fallbackPosterUrl,
     required this.progress,
-  });
-}
-
-class _ChannelEpg {
-  final _StbProgram live;
-  final _StbProgram next;
-
-  const _ChannelEpg({required this.live, required this.next});
-}
-
-class _HindiTrendingItem {
-  final String badge;
-  final String title;
-  final String subtitle;
-  final Color accent;
-  final IconData icon;
-
-  const _HindiTrendingItem({
-    required this.badge,
-    required this.title,
-    required this.subtitle,
-    required this.accent,
-    required this.icon,
+    required this.isLiveNow,
   });
 }
 
 class _EpgService {
-  static final Map<int, _ChannelEpg> _cache = {};
-  static final math.Random _rng = math.Random();
-
-  static const List<_HindiTrendingItem> _trendingPool = [
-    _HindiTrendingItem(
-      badge: 'LIVE CRICKET',
-      title: 'IND vs AUS Live Match',
-      subtitle: 'Hindi Commentary • Live',
-      accent: Color(0xFF1565C0),
-      icon: Icons.sports_cricket_rounded,
-    ),
-    _HindiTrendingItem(
-      badge: 'WORLD PREMIERE',
-      title: 'Stree 2 (Hindi)',
-      subtitle: 'Superhit Premiere Movie',
-      accent: Color(0xFFC62828),
-      icon: Icons.movie_creation_rounded,
-    ),
-    _HindiTrendingItem(
-      badge: 'HINDI TRENDING',
-      title: 'Taarak Mehta Ka Ooltah...',
-      subtitle: 'Top Trending Comedy Show',
-      accent: Color(0xFFE65312),
-      icon: Icons.trending_up_rounded,
-    ),
-    _HindiTrendingItem(
-      badge: 'PREMIERE MOVIE',
-      title: 'Bhool Bhulaiyaa 3',
-      subtitle: 'Blockbuster Hindi HD',
-      accent: Color(0xFF6A1B9A),
-      icon: Icons.local_movies_rounded,
-    ),
-    _HindiTrendingItem(
-      badge: 'HINDI TRENDING',
-      title: 'Bigg Boss Special',
-      subtitle: 'Live Reality Show',
-      accent: Color(0xFFD84315),
-      icon: Icons.whatshot_rounded,
-    ),
-    _HindiTrendingItem(
-      badge: 'CRICKET LIVE',
-      title: 'T20 Cricket Highlights',
-      subtitle: 'Hindi Sports Trending',
-      accent: Color(0xFF00695C),
-      icon: Icons.sports_score_rounded,
-    ),
-    _HindiTrendingItem(
-      badge: 'BLOCKBUSTER',
-      title: 'Jawan • Hindi Action',
-      subtitle: 'Cinema Premiere',
-      accent: Color(0xFFB71C1C),
-      icon: Icons.star_rounded,
-    ),
-    _HindiTrendingItem(
-      badge: 'HINDI LIVE',
-      title: 'The Kapil Sharma Show',
-      subtitle: 'Trending Weekend Show',
-      accent: Color(0xFF283593),
-      icon: Icons.theater_comedy_rounded,
-    ),
-  ];
-
-  static _HindiTrendingItem pickRandomTrending([_HindiTrendingItem? avoid]) {
-    if (_trendingPool.length <= 1) return _trendingPool.first;
-    _HindiTrendingItem picked;
-    do {
-      picked = _trendingPool[_rng.nextInt(_trendingPool.length)];
-    } while (avoid != null && picked.title == avoid.title);
-    return picked;
-  }
+  static final Map<int, List<_StbProgram>> _cache = {};
 
   static String _fmtTime(DateTime dt) {
     final hour24 = dt.hour;
@@ -1689,145 +1601,168 @@ class _EpgService {
     return days[(weekday - 1).clamp(0, 6)];
   }
 
-  static _ChannelEpg fallbackFor(TvChannel ch) {
-    final now = DateTime.now();
-    final slotStartMin = now.minute < 30 ? 0 : 30;
-    final liveStart = DateTime(now.year, now.month, now.day, now.hour, slotStartMin);
-    final liveEnd = liveStart.add(const Duration(minutes: 30));
-    final nextEnd = liveEnd.add(const Duration(minutes: 30));
-    final elapsed = now.difference(liveStart).inSeconds;
-    final progress = (elapsed / 1800.0).clamp(0.06, 0.96);
-    final day = _weekdayShort(now.weekday);
-    final cat = ch.category.toLowerCase();
-
-    late final String liveTitle;
-    late final String liveDesc;
-    late final String nextTitle;
-    late final String nextDesc;
-
-    if (cat.contains('sport')) {
-      liveTitle = '${ch.name} Live Match & Analysis';
-      liveDesc = 'Live stadium action, pitch insights, Hindi commentary aur real-time score updates.';
-      nextTitle = 'Post Match & Trending Highlights';
-      nextDesc = 'Match ke best moments, top wickets aur expert panel analysis.';
-    } else if (cat.contains('movie')) {
-      liveTitle = '${ch.name} Premiere Feature Film';
-      liveDesc = 'Aaj ki blockbuster feature movie HD picture quality aur surround audio ke saath.';
-      nextTitle = 'Mega Night Cinema Special';
-      nextDesc = 'Agli superhit family entertainer film non-stop broadcasting ke saath.';
-    } else if (cat.contains('news')) {
-      liveTitle = 'Breaking News & Live Bulletin';
-      liveDesc = 'Desh aur duniya ki sabse badi khabrein aur live ground reports.';
-      nextTitle = 'Prime Debate & Top Headlines';
-      nextDesc = 'Din bhar ki badi khabron par vishesh charcha aur tezi se updates.';
-    } else if (cat.contains('kid')) {
-      liveTitle = '${ch.name} Cartoon Adventure';
-      liveDesc = 'Bachchon ka pasandida animated show masti aur comedy ke saath.';
-      nextTitle = 'Super Hero Kids Hour';
-      nextDesc = 'Naya episode action aur fun-filled adventures se bhara hua.';
-    } else if (cat.contains('music')) {
-      liveTitle = 'Top Trending Hindi Hits';
-      liveDesc = 'Non-stop Bollywood chartbusters aur latest trending music videos.';
-      nextTitle = 'Retro & Romantic Special';
-      nextDesc = 'Sadaabahar superhit gaane aur viewers choice playlist.';
-    } else {
-      liveTitle = '${ch.name} Prime Show Live';
-      liveDesc = '${ch.name} par abhi dekhein popular family show aur live entertainment broadcast.';
-      nextTitle = '${ch.name} Next Special Episode';
-      nextDesc = 'Agle slot mein dekhein naya drama, twist aur special episode presentation.';
+  static (String, String) _posterCandidates(String rawPoster, TvChannel ch) {
+    final clean = rawPoster.trim().replaceFirst(RegExp(r'^/+'), '');
+    if (clean.isEmpty || clean == 'null') {
+      return (ch.logo, ch.fallbackLogo);
     }
-
-    return _ChannelEpg(
-      live: _StbProgram(
-        title: liveTitle,
-        timeLabel: '$day : ${_fmtTime(liveStart)} - ${_fmtTime(liveEnd)}',
-        description: liveDesc,
-        posterUrl: ch.logo,
-        progress: progress,
-      ),
-      next: _StbProgram(
-        title: nextTitle,
-        timeLabel: '$day : ${_fmtTime(liveEnd)} - ${_fmtTime(nextEnd)}',
-        description: nextDesc,
-        posterUrl: ch.logo,
-        progress: 0.0,
-      ),
+    if (clean.startsWith('http://') || clean.startsWith('https://')) {
+      return (clean, ch.logo);
+    }
+    final rel = clean.startsWith('dare_images/')
+        ? clean
+        : (clean.startsWith('shows/') ? 'dare_images/$clean' : 'dare_images/shows/$clean');
+    return (
+      'https://jiotvimages.cdn.jio.com/$rel',
+      'https://jiotv.catchup.cdn.jio.com/$rel',
     );
   }
 
-  static Future<_ChannelEpg> fetch(TvChannel ch) async {
+  static List<_StbProgram> fallback48h(TvChannel ch) {
+    final now = DateTime.now();
+    final slotStartMin = now.minute < 30 ? 0 : 30;
+    final firstStart = DateTime(now.year, now.month, now.day, now.hour, slotStartMin);
+    final cat = ch.category.toLowerCase();
+
+    List<(String, String)> templates;
+    if (cat.contains('sport')) {
+      templates = [
+        ('${ch.name} Live Match & Analysis', 'Live stadium action, pitch insights, Hindi commentary aur real-time score updates.'),
+        ('Post Match & Highlights Special', 'Match ke best moments, top wickets, boundaries aur expert panel analysis.'),
+        ('Sports Countdown & Top Plays', 'Din ke sabse behtareen sporting moments aur player stats.'),
+        ('Live Studio Pre-Game Show', 'Aane wale mukable ki team news, playing XI aur expert preview.'),
+      ];
+    } else if (cat.contains('movie')) {
+      templates = [
+        ('${ch.name} Blockbuster Feature Film', 'Superhit feature movie HD picture quality aur surround audio ke saath.'),
+        ('Prime Cinema Showcase', 'Family entertainer blockbuster movie non-stop broadcasting ke saath.'),
+        ('Action & Drama Movie Special', 'Viewer choice hit cinema presentation poori family ke liye.'),
+        ('Late Night Classic Cinema', 'Sadaabahar superhit Hindi aur regional cinema presentation.'),
+      ];
+    } else if (cat.contains('news')) {
+      templates = [
+        ('Breaking News & Live Bulletin', 'Desh aur duniya ki sabse badi khabrein aur live ground reports.'),
+        ('Prime Debate & Top Headlines', 'Din bhar ki badi khabron par vishesh charcha aur tezi se updates.'),
+        ('24x7 Express News Desk', 'Har rajya aur shahar ki taaza khabrein aur live reporters se update.'),
+        ('Special Report & Analysis', 'Khas muddon par ground zero reporting aur panel discussion.'),
+      ];
+    } else if (cat.contains('kid')) {
+      templates = [
+        ('${ch.name} Cartoon Adventure', 'Bachchon ka pasandida animated show masti aur comedy ke saath.'),
+        ('Super Hero Kids Hour', 'Naya episode action aur fun-filled adventures se bhara hua.'),
+        ('Junior Fun Time Special', 'Animated characters ke saath hasi aur learning ka zabardast tadka.'),
+        ('Mega Toon Marathon', 'Non-stop back-to-back popular kids episodes.'),
+      ];
+    } else if (cat.contains('music')) {
+      templates = [
+        ('Top Trending Hindi Hits', 'Non-stop Bollywood chartbusters aur latest trending music videos.'),
+        ('Retro & Romantic Special', 'Sadaabahar superhit gaane aur viewers choice playlist.'),
+        ('Party & Dance Beats', 'High energy music tracks aur superhit club remixes.'),
+        ('Fresh Hits Countdown', 'Is hafte ke sabse zyada pasand kiye gaye top 20 songs.'),
+      ];
+    } else {
+      templates = [
+        ('${ch.name} Prime Show', '${ch.name} par dekhein popular family show aur live entertainment broadcast.'),
+        ('${ch.name} Special Episode', 'Naya drama, twists aur family entertainment ka special episode.'),
+        ('Viewer Choice Mega Serial', 'Darshakon ka pasandida daily soap aur emotional drama moments.'),
+        ('Weekend Entertainment Hour', 'Comedy, dance aur star performances se bhara special showcase.'),
+      ];
+    }
+
+    final list = <_StbProgram>[];
+    for (var i = 0; i < 48; i++) {
+      final start = firstStart.add(Duration(hours: i == 0 ? 0 : 0, minutes: i * 60 - (i > 0 ? 30 : 0)));
+      final end = i == 0 ? firstStart.add(const Duration(minutes: 30)) : start.add(const Duration(minutes: 60));
+      final tpl = templates[i % templates.length];
+      final prog = i == 0
+          ? (now.difference(start).inSeconds / 1800.0).clamp(0.05, 0.96)
+          : 0.0;
+      list.add(_StbProgram(
+        title: tpl.$1,
+        timeLabel: '${_weekdayShort(start.weekday)} : ${_fmtTime(start)} - ${_fmtTime(end)}',
+        description: tpl.$2,
+        posterUrl: ch.logo,
+        fallbackPosterUrl: ch.fallbackLogo,
+        progress: prog,
+        isLiveNow: i == 0,
+      ));
+    }
+    return list;
+  }
+
+  static Future<List<_StbProgram>> fetchSchedule48h(TvChannel ch) async {
     final cached = _cache[ch.id];
-    if (cached != null) return cached;
+    if (cached != null && cached.isNotEmpty) return cached;
 
     if (ch.id >= 1000000) {
-      return fallbackFor(ch);
+      return fallback48h(ch);
     }
 
     try {
-      final url = 'https://jiotv.data.cdn.jio.com/apis/v1.3/getepg/get?channel_id=${ch.id}&offset=0';
-      final response = await http
-          .get(Uri.parse(url), headers: _AnasTvHomePageState.headers)
-          .timeout(const Duration(seconds: 5));
-      if (response.statusCode != 200 || response.body.trim().isEmpty) {
-        return fallbackFor(ch);
-      }
-      final decoded = jsonDecode(response.body);
-      final List epgList = decoded is Map && decoded['epg'] is List ? decoded['epg'] as List : [];
-      if (epgList.isEmpty) return fallbackFor(ch);
+      final responses = await Future.wait([0, 1, 2].map((offset) {
+        final url = 'https://jiotv.data.cdn.jio.com/apis/v1.3/getepg/get?channel_id=${ch.id}&offset=$offset';
+        return http
+            .get(Uri.parse(url), headers: _AnasTvHomePageState.headers)
+            .timeout(const Duration(seconds: 6));
+      }));
 
       final nowMs = DateTime.now().millisecondsSinceEpoch;
-      int currentIdx = -1;
-      for (var i = 0; i < epgList.length; i++) {
-        final row = epgList[i];
-        if (row is! Map) continue;
-        final s = _parseEpochMs(row['startEpoch']);
-        final e = _parseEpochMs(row['endEpoch']);
-        if (s > 0 && e > s && nowMs >= s && nowMs < e) {
-          currentIdx = i;
-          break;
+      final cutoffMs = nowMs + const Duration(hours: 48).inMilliseconds;
+      final seenStart = <int>{};
+      final rawEntries = <Map<String, dynamic>>[];
+
+      for (final res in responses) {
+        if (res.statusCode != 200 || res.body.trim().isEmpty) continue;
+        final decoded = jsonDecode(res.body);
+        final List rows = decoded is Map && decoded['epg'] is List ? decoded['epg'] as List : [];
+        for (final row in rows) {
+          if (row is! Map) continue;
+          final map = Map<String, dynamic>.from(row);
+          final s = _parseEpochMs(map['startEpoch']);
+          final e = _parseEpochMs(map['endEpoch']);
+          if (s <= 0 || e <= s) continue;
+          if (e <= nowMs || s > cutoffMs) continue;
+          if (!seenStart.add(s)) continue;
+          map['_startMs'] = s;
+          map['_endMs'] = e;
+          rawEntries.add(map);
         }
       }
-      if (currentIdx < 0) return fallbackFor(ch);
 
-      _StbProgram toProg(Map raw, {bool computeProgress = false}) {
-        final sMs = _parseEpochMs(raw['startEpoch']);
-        final eMs = _parseEpochMs(raw['endEpoch']);
+      if (rawEntries.isEmpty) return fallback48h(ch);
+
+      rawEntries.sort((a, b) => (a['_startMs'] as int).compareTo(b['_startMs'] as int));
+
+      final programs = <_StbProgram>[];
+      for (final raw in rawEntries) {
+        final sMs = raw['_startMs'] as int;
+        final eMs = raw['_endMs'] as int;
         final sDt = DateTime.fromMillisecondsSinceEpoch(sMs);
         final eDt = DateTime.fromMillisecondsSinceEpoch(eMs);
-        final prog = computeProgress && eMs > sMs
+        final isLive = nowMs >= sMs && nowMs < eMs;
+        final prog = isLive && eMs > sMs
             ? ((nowMs - sMs) / (eMs - sMs)).clamp(0.05, 0.98)
             : 0.0;
-        final rawPoster = (raw['episodePoster'] ?? '').toString().trim();
-        final posterUrl = rawPoster.isEmpty
-            ? ch.logo
-            : (rawPoster.startsWith('http')
-                ? rawPoster
-                : 'https://jiotv.catchup.cdn.jio.com/dare_images/shows/$rawPoster');
-        final title = (raw['showname'] ?? '${ch.name} Live').toString().trim();
-        final desc = (raw['description'] ?? '${ch.name} live television broadcast.').toString().trim();
-        return _StbProgram(
-          title: title.isEmpty ? '${ch.name} Live' : title,
+        final rawPoster = (raw['episodePoster'] ?? raw['showpic'] ?? '').toString();
+        final posters = _posterCandidates(rawPoster, ch);
+        final title = (raw['showname'] ?? '${ch.name} Show').toString().trim();
+        final desc = (raw['description'] ?? '${ch.name} television broadcast.').toString().trim();
+        programs.add(_StbProgram(
+          title: title.isEmpty ? '${ch.name} Show' : title,
           timeLabel: '${_weekdayShort(sDt.weekday)} : ${_fmtTime(sDt)} - ${_fmtTime(eDt)}',
-          description: desc.isEmpty ? '${ch.name} live television broadcast.' : desc,
-          posterUrl: posterUrl,
+          description: desc.isEmpty ? '${ch.name} television broadcast.' : desc,
+          posterUrl: posters.$1,
+          fallbackPosterUrl: posters.$2,
           progress: prog,
-        );
+          isLiveNow: isLive,
+        ));
       }
 
-      final liveMap = Map<String, dynamic>.from(epgList[currentIdx] as Map);
-      final liveProg = toProg(liveMap, computeProgress: true);
-      final _StbProgram nextProg;
-      if (currentIdx + 1 < epgList.length && epgList[currentIdx + 1] is Map) {
-        nextProg = toProg(Map<String, dynamic>.from(epgList[currentIdx + 1] as Map));
-      } else {
-        nextProg = fallbackFor(ch).next;
-      }
-
-      final result = _ChannelEpg(live: liveProg, next: nextProg);
-      _cache[ch.id] = result;
-      return result;
+      if (programs.isEmpty) return fallback48h(ch);
+      _cache[ch.id] = programs;
+      return programs;
     } catch (_) {
-      return fallbackFor(ch);
+      return fallback48h(ch);
     }
   }
 
@@ -1857,20 +1792,24 @@ class AnasTvPlayerScreen extends StatefulWidget {
 enum _StbPickerKind { audio, quality, stretch }
 
 class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
+  static const List<Shadow> _textShadows = [
+    Shadow(color: Color(0xD9000000), blurRadius: 8, offset: Offset(0, 1)),
+    Shadow(color: Color(0x88000000), blurRadius: 2, offset: Offset(0, 0)),
+  ];
+
   final FocusNode _playerFocus = FocusNode();
 
   late int _playingIndex;
   late int _previewIndex;
-  late _ChannelEpg _previewEpg;
-  late _HindiTrendingItem _trendingItem;
+  late List<_StbProgram> _previewPrograms;
+  int _programIndex = 0;
 
   ResolvedPlayback? _resolved;
   String? _error;
   bool _loading = true;
   bool _isPaused = false;
   bool _isExiting = false;
-  bool _bannerVisible = true;
-  bool _showNextProgram = false;
+  bool _bannerVisible = false;
   bool _optionsMode = false;
   int _selectedOptionIdx = 0;
 
@@ -1889,23 +1828,38 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   Timer? _clockTimer;
   DateTime _now = DateTime.now();
   int _playRequestSeq = 0;
+  double _bannerDragX = 0;
 
   TvChannel get _playingChannel => widget.channels[_playingIndex];
   TvChannel get _previewChannel => widget.channels[_previewIndex];
+
+  _StbProgram get _activeProgram {
+    if (_previewPrograms.isEmpty) {
+      return _EpgService.fallback48h(_previewChannel).first;
+    }
+    final idx = _programIndex.clamp(0, _previewPrograms.length - 1);
+    return _previewPrograms[idx];
+  }
+
+  _StbProgram? get _nextTeaserProgram {
+    if (_programIndex + 1 < _previewPrograms.length) {
+      return _previewPrograms[_programIndex + 1];
+    }
+    return null;
+  }
 
   @override
   void initState() {
     super.initState();
     _playingIndex = widget.initialIndex.clamp(0, widget.channels.length - 1);
     _previewIndex = _playingIndex;
-    _previewEpg = _EpgService.fallbackFor(_previewChannel);
-    _trendingItem = _EpgService.pickRandomTrending();
+    _previewPrograms = _EpgService.fallback48h(_previewChannel);
 
     _clockTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (mounted) setState(() => _now = DateTime.now());
     });
 
-    _loadPreviewEpg(_previewChannel);
+    _loadPreviewSchedule(_previewChannel);
     _startChannelStream(_playingIndex);
     _scheduleBannerAutoHide();
 
@@ -1944,21 +1898,19 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       setState(() {
         _bannerVisible = false;
         _optionsMode = false;
-        _showNextProgram = false;
+        _programIndex = 0;
         _previewIndex = _playingIndex;
-        _loadPreviewEpg(_playingChannel);
+        _loadPreviewSchedule(_playingChannel);
       });
     });
   }
 
   void _showBanner({bool resetToPlaying = false, bool openOptions = false}) {
     setState(() {
-      if (!_bannerVisible || resetToPlaying) {
-        _trendingItem = _EpgService.pickRandomTrending(_trendingItem);
-      }
       if (resetToPlaying) {
         _previewIndex = _playingIndex;
-        _loadPreviewEpg(_playingChannel);
+        _programIndex = 0;
+        _loadPreviewSchedule(_playingChannel);
       }
       _bannerVisible = true;
       _optionsMode = openOptions;
@@ -1967,11 +1919,17 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     _scheduleBannerAutoHide();
   }
 
-  Future<void> _loadPreviewEpg(TvChannel target) async {
-    setState(() => _previewEpg = _EpgService.fallbackFor(target));
-    final fetched = await _EpgService.fetch(target);
+  Future<void> _loadPreviewSchedule(TvChannel target) async {
+    setState(() {
+      _previewPrograms = _EpgService.fallback48h(target);
+      _programIndex = 0;
+    });
+    final fetched = await _EpgService.fetchSchedule48h(target);
     if (!mounted || _previewChannel.id != target.id) return;
-    setState(() => _previewEpg = fetched);
+    setState(() {
+      _previewPrograms = fetched;
+      if (_programIndex >= fetched.length) _programIndex = 0;
+    });
   }
 
   Future<void> _startChannelStream(int targetIndex) async {
@@ -1982,15 +1940,17 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     setState(() {
       _playingIndex = targetIndex;
       _previewIndex = targetIndex;
+      _programIndex = 0;
       _loading = true;
       _error = null;
       _isPaused = false;
+      _bannerVisible = false;
       _optionsMode = false;
       _openPicker = null;
       _selectedAudioLabel = 'Default';
       _selectedQualityLabel = 'Auto (Best)';
     });
-    _loadPreviewEpg(target);
+    _loadPreviewSchedule(target);
 
     _watchdog = Timer(const Duration(seconds: 25), () {
       if (!mounted || reqId != _playRequestSeq || !_loading) return;
@@ -2069,9 +2029,18 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       _bannerVisible = true;
       _optionsMode = false;
       _previewIndex = nextIdx;
-      _trendingItem = _EpgService.pickRandomTrending(_trendingItem);
+      _programIndex = 0;
     });
-    _loadPreviewEpg(widget.channels[nextIdx]);
+    _loadPreviewSchedule(widget.channels[nextIdx]);
+    _scheduleBannerAutoHide();
+  }
+
+  void _stepProgram(int delta) {
+    if (_previewPrograms.isEmpty) return;
+    final next = (_programIndex + delta).clamp(0, _previewPrograms.length - 1);
+    if (next != _programIndex) {
+      setState(() => _programIndex = next);
+    }
     _scheduleBannerAutoHide();
   }
 
@@ -2213,9 +2182,9 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     if (_bannerVisible && _error == null) {
       setState(() {
         _bannerVisible = false;
-        _showNextProgram = false;
+        _programIndex = 0;
         _previewIndex = _playingIndex;
-        _loadPreviewEpg(_playingChannel);
+        _loadPreviewSchedule(_playingChannel);
       });
       _bannerAutoHideTimer?.cancel();
       return;
@@ -2296,6 +2265,18 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       return KeyEventResult.handled;
     }
 
+    // Wake banner first on Left / Right / Up / Down when hidden, just like a normal STB player.
+    if (!_bannerVisible &&
+        (key == LogicalKeyboardKey.arrowLeft ||
+            key == LogicalKeyboardKey.arrowRight ||
+            key == LogicalKeyboardKey.arrowUp ||
+            key == LogicalKeyboardKey.arrowDown)) {
+      if (event is KeyDownEvent) {
+        _showBanner(resetToPlaying: true);
+      }
+      return KeyEventResult.handled;
+    }
+
     if (key == LogicalKeyboardKey.channelUp) {
       _stepPreviewChannel(1);
       return KeyEventResult.handled;
@@ -2339,21 +2320,12 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       _stepPreviewChannel(1);
       return KeyEventResult.handled;
     }
-
     if (key == LogicalKeyboardKey.arrowUp) {
-      if (!_bannerVisible) {
-        _showBanner(resetToPlaying: true);
-      }
-      setState(() => _showNextProgram = false);
-      _scheduleBannerAutoHide();
+      _stepProgram(-1);
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.arrowDown) {
-      if (!_bannerVisible) {
-        _showBanner(resetToPlaying: true);
-      }
-      setState(() => _showNextProgram = true);
-      _scheduleBannerAutoHide();
+      _stepProgram(1);
       return KeyEventResult.handled;
     }
 
@@ -2402,8 +2374,8 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   @override
   Widget build(BuildContext context) {
     final previewCh = _previewChannel;
-    final isPreviewDifferent = _previewIndex != _playingIndex;
-    final activeProgram = _showNextProgram ? _previewEpg.next : _previewEpg.live;
+    final activeProgram = _activeProgram;
+    final nextProgram = _nextTeaserProgram;
     final screenW = MediaQuery.sizeOf(context).width;
     final compactLayout = screenW < 720;
 
@@ -2509,18 +2481,12 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                     right: 0,
                     child: Container(
                       padding: EdgeInsets.fromLTRB(
-                        compactLayout ? 14 : 24,
+                        compactLayout ? 14 : 26,
                         compactLayout ? 10 : 14,
-                        compactLayout ? 14 : 24,
-                        18,
+                        compactLayout ? 14 : 26,
+                        12,
                       ),
-                      decoration: const BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [Color(0xBF000000), Colors.transparent],
-                        ),
-                      ),
+                      color: Colors.black.withValues(alpha: 0.14),
                       child: SafeArea(
                         bottom: false,
                         child: Row(
@@ -2532,7 +2498,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                                 child: Container(
                                   padding: const EdgeInsets.all(6),
                                   decoration: BoxDecoration(
-                                    color: Colors.black.withValues(alpha: 0.45),
+                                    color: Colors.black.withValues(alpha: 0.25),
                                     shape: BoxShape.circle,
                                   ),
                                   child: const Icon(Icons.arrow_back, color: Colors.white, size: 20),
@@ -2540,20 +2506,14 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                               ),
                               const SizedBox(width: 10),
                             ],
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.45),
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                              child: Text(
-                                _clockHeaderText(),
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  letterSpacing: 0.2,
-                                ),
+                            Text(
+                              _clockHeaderText(),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 0.2,
+                                shadows: _textShadows,
                               ),
                             ),
                             const Spacer(),
@@ -2580,287 +2540,164 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                     right: 0,
                     bottom: 0,
                     child: GestureDetector(
-                      onTap: _scheduleBannerAutoHide,
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () {
+                        if (_previewIndex != _playingIndex) {
+                          _startChannelStream(_previewIndex);
+                        } else {
+                          _scheduleBannerAutoHide();
+                        }
+                      },
+                      onHorizontalDragStart: !widget.isTv ? (_) => _bannerDragX = 0 : null,
+                      onHorizontalDragUpdate:
+                          !widget.isTv ? (d) => _bannerDragX += d.delta.dx : null,
+                      onHorizontalDragEnd: !widget.isTv
+                          ? (d) {
+                              if (_bannerDragX < -40 || (d.primaryVelocity ?? 0) < -200) {
+                                _stepPreviewChannel(1);
+                              } else if (_bannerDragX > 40 || (d.primaryVelocity ?? 0) > 200) {
+                                _stepPreviewChannel(-1);
+                              }
+                            }
+                          : null,
                       child: Container(
                         padding: EdgeInsets.fromLTRB(
-                          compactLayout ? 12 : 22,
+                          compactLayout ? 14 : 28,
                           14,
-                          compactLayout ? 12 : 22,
+                          compactLayout ? 14 : 28,
                           compactLayout ? 10 : 14,
                         ),
-                        decoration: const BoxDecoration(
+                        decoration: BoxDecoration(
                           gradient: LinearGradient(
                             begin: Alignment.topCenter,
                             end: Alignment.bottomCenter,
                             colors: [
-                              Color(0x00090B10),
-                              Color(0xD60C0E14),
-                              Color(0xF208090D),
+                              Colors.black.withValues(alpha: 0.06),
+                              Colors.black.withValues(alpha: 0.16),
+                              Colors.black.withValues(alpha: 0.22),
                             ],
-                            stops: [0.0, 0.18, 1.0],
+                            stops: const [0.0, 0.3, 1.0],
                           ),
                         ),
                         child: SafeArea(
                           top: false,
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
-                              Row(
-                                children: [
-                                  InkWell(
-                                    onTap: () => _stepPreviewChannel(-1),
-                                    borderRadius: BorderRadius.circular(14),
-                                    child: const Padding(
-                                      padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                      child: Icon(Icons.chevron_left_rounded, color: Colors.white, size: 22),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    '${_previewIndex + 101}',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Flexible(
-                                    child: Text(
-                                      previewCh.name,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  InkWell(
-                                    onTap: () => _stepPreviewChannel(1),
-                                    borderRadius: BorderRadius.circular(14),
-                                    child: const Padding(
-                                      padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                      child: Icon(Icons.chevron_right_rounded, color: Colors.white, size: 22),
-                                    ),
-                                  ),
-                                  if (isPreviewDifferent) ...[
-                                    const SizedBox(width: 8),
-                                    InkWell(
-                                      onTap: () => _startChannelStream(_previewIndex),
-                                      borderRadius: BorderRadius.circular(14),
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFFE65312),
-                                          borderRadius: BorderRadius.circular(14),
-                                        ),
-                                        child: Text(
-                                          widget.isTv ? 'OK to Watch' : 'Watch Channel',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 11,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                  const Spacer(),
-                                  if (previewCh.hd) ...[
-                                    _StbBadge(text: 'HD'),
-                                    const SizedBox(width: 6),
-                                  ],
-                                  _StbBadge(text: _resizeModeShort().toUpperCase()),
-                                  const SizedBox(width: 8),
-                                  InkWell(
-                                    onTap: () => _showBanner(openOptions: !_optionsMode),
-                                    borderRadius: BorderRadius.circular(14),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                      decoration: BoxDecoration(
-                                        color: _optionsMode
-                                            ? const Color(0xFFE65312)
-                                            : Colors.white.withValues(alpha: 0.9),
-                                        borderRadius: BorderRadius.circular(14),
-                                      ),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(
-                                            Icons.tune_rounded,
-                                            size: 13,
-                                            color: _optionsMode ? Colors.white : Colors.black,
-                                          ),
-                                          const SizedBox(width: 4),
-                                          Text(
-                                            'Options',
-                                            style: TextStyle(
-                                              color: _optionsMode ? Colors.white : Colors.black,
-                                              fontSize: 11.5,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.center,
-                                children: [
-                                  if (!compactLayout) ...[
-                                    _HindiTrendingCard(
-                                      item: _trendingItem,
-                                      onTap: () {
-                                        setState(() {
-                                          _trendingItem = _EpgService.pickRandomTrending(_trendingItem);
-                                        });
-                                        _scheduleBannerAutoHide();
-                                      },
-                                    ),
-                                    const SizedBox(width: 12),
-                                  ],
-                                  Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      InkWell(
-                                        onTap: () {
-                                          setState(() {
-                                            _optionsMode = false;
-                                            _showNextProgram = false;
-                                          });
-                                          _scheduleBannerAutoHide();
-                                        },
-                                        child: Icon(
-                                          Icons.arrow_drop_up_rounded,
-                                          size: 22,
-                                          color: !_showNextProgram && !_optionsMode
-                                              ? const Color(0xFFE65312)
-                                              : Colors.white54,
-                                        ),
-                                      ),
-                                      InkWell(
-                                        onTap: () {
-                                          setState(() {
-                                            _optionsMode = false;
-                                            _showNextProgram = true;
-                                          });
-                                          _scheduleBannerAutoHide();
-                                        },
-                                        child: Icon(
-                                          Icons.arrow_drop_down_rounded,
-                                          size: 22,
-                                          color: _showNextProgram && !_optionsMode
-                                              ? const Color(0xFFE65312)
-                                              : Colors.white54,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Container(
-                                    width: compactLayout ? 86 : 112,
-                                    height: compactLayout ? 56 : 68,
-                                    decoration: BoxDecoration(
-                                      color: Colors.white,
-                                      borderRadius: BorderRadius.circular(6),
-                                      border: Border.all(
-                                        color: isPreviewDifferent
-                                            ? const Color(0xFFE65312)
-                                            : Colors.white24,
-                                        width: isPreviewDifferent ? 2 : 1,
-                                      ),
-                                    ),
-                                    clipBehavior: Clip.antiAlias,
-                                    padding: const EdgeInsets.all(6),
-                                    child: _ChannelLogo(
-                                      primaryUrl: previewCh.logo,
-                                      fallbackUrl: previewCh.fallbackLogo,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 14),
-                                  Expanded(
-                                    child: _optionsMode
-                                        ? _buildStbOptionsBar()
-                                        : _buildStbProgramDetails(activeProgram),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
                               ClipRRect(
-                                borderRadius: BorderRadius.circular(2),
-                                child: LinearProgressIndicator(
-                                  minHeight: 3,
-                                  value: _showNextProgram ? 0.0 : _previewEpg.live.progress,
-                                  backgroundColor: Colors.white24,
-                                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFE53935)),
+                                borderRadius: BorderRadius.circular(6),
+                                child: Container(
+                                  width: compactLayout ? 134 : 204,
+                                  height: compactLayout ? 84 : 118,
+                                  color: Colors.black.withValues(alpha: 0.28),
+                                  child: _ProgramPoster(
+                                    primaryUrl: activeProgram.posterUrl,
+                                    fallbackUrl: activeProgram.fallbackPosterUrl,
+                                    channelLogo: previewCh.logo,
+                                    channelFallbackLogo: previewCh.fallbackLogo,
+                                  ),
                                 ),
                               ),
-                              if (!_optionsMode) ...[
-                                const SizedBox(height: 6),
-                                Row(
+                              SizedBox(width: compactLayout ? 12 : 18),
+                              Expanded(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                      decoration: BoxDecoration(
-                                        color: _showNextProgram
-                                            ? const Color(0xFF2B303B)
-                                            : const Color(0xFFE65312),
-                                        borderRadius: BorderRadius.circular(4),
-                                      ),
-                                      child: Text(
-                                        _showNextProgram ? 'NOW' : 'NEXT',
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 9.5,
-                                          fontWeight: FontWeight.w800,
+                                    Row(
+                                      children: [
+                                        Text(
+                                          '${_previewIndex + 101}',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.w800,
+                                            shadows: _textShadows,
+                                          ),
                                         ),
+                                        const SizedBox(width: 10),
+                                        Expanded(
+                                          child: Text(
+                                            previewCh.name,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 16,
+                                              fontWeight: FontWeight.w700,
+                                              shadows: _textShadows,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 10),
+                                        InkWell(
+                                          onTap: () => _showBanner(openOptions: !_optionsMode),
+                                          borderRadius: BorderRadius.circular(14),
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 4),
+                                            decoration: BoxDecoration(
+                                              color: _optionsMode
+                                                  ? const Color(0xFFE65312)
+                                                  : Colors.white.withValues(alpha: 0.92),
+                                              borderRadius: BorderRadius.circular(14),
+                                            ),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Icon(
+                                                  Icons.tune_rounded,
+                                                  size: 13,
+                                                  color: _optionsMode ? Colors.white : Colors.black,
+                                                ),
+                                                const SizedBox(width: 4),
+                                                Text(
+                                                  'Options',
+                                                  style: TextStyle(
+                                                    color: _optionsMode ? Colors.white : Colors.black,
+                                                    fontSize: 11.5,
+                                                    fontWeight: FontWeight.w700,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 6),
+                                    _optionsMode
+                                        ? _buildStbOptionsBar()
+                                        : _buildStbProgramDetails(activeProgram),
+                                    const SizedBox(height: 8),
+                                    ClipRRect(
+                                      borderRadius: BorderRadius.circular(2),
+                                      child: LinearProgressIndicator(
+                                        minHeight: 3,
+                                        value: activeProgram.isLiveNow ? activeProgram.progress : 0.0,
+                                        backgroundColor: Colors.white.withValues(alpha: 0.25),
+                                        valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFE53935)),
                                       ),
                                     ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Text(
-                                        _showNextProgram
-                                            ? '${_previewEpg.live.title}  (${_previewEpg.live.timeLabel})'
-                                            : '${_previewEpg.next.title}  (${_previewEpg.next.timeLabel})',
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          color: Colors.white70,
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                    ),
-                                    if (compactLayout) ...[
-                                      const SizedBox(width: 8),
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                                        decoration: BoxDecoration(
-                                          color: _trendingItem.accent.withValues(alpha: 0.85),
-                                          borderRadius: BorderRadius.circular(4),
-                                        ),
+                                    if (!_optionsMode && nextProgram != null) ...[
+                                      const SizedBox(height: 6),
+                                      InkWell(
+                                        onTap: () => _stepProgram(1),
                                         child: Text(
-                                          _trendingItem.title,
+                                          '${nextProgram.title}  •  ${nextProgram.timeLabel}',
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
                                           style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.w700,
+                                            color: Color(0xFFE6EAF2),
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w500,
+                                            shadows: _textShadows,
                                           ),
                                         ),
                                       ),
                                     ],
                                   ],
                                 ),
-                              ],
+                              ),
                             ],
                           ),
                         ),
@@ -2881,37 +2718,16 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: _showNextProgram ? const Color(0xFF1E88E5) : const Color(0xFFE53935),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(
-                _showNextProgram ? 'UP NEXT' : 'LIVE',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 9.5,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                program.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-          ],
+        Text(
+          program.title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 15.5,
+            fontWeight: FontWeight.w700,
+            shadows: _textShadows,
+          ),
         ),
         const SizedBox(height: 3),
         Text(
@@ -2919,20 +2735,22 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(
-            color: Color(0xFFD5D8E0),
-            fontSize: 11.5,
+            color: Color(0xFFF0F3F8),
+            fontSize: 12,
             fontWeight: FontWeight.w600,
+            shadows: _textShadows,
           ),
         ),
-        const SizedBox(height: 3),
+        const SizedBox(height: 4),
         Text(
           program.description,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(
-            color: Color(0xFFB6BAC4),
+            color: Color(0xFFDDE2EC),
             fontSize: 11.5,
             height: 1.25,
+            shadows: _textShadows,
           ),
         ),
       ],
@@ -2951,58 +2769,60 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       scrollDirection: Axis.horizontal,
       child: Row(
         children: List.generate(options.length, (i) {
-        final selected = _selectedOptionIdx == i;
-        final item = options[i];
-        return Padding(
-          padding: const EdgeInsets.only(right: 18),
-          child: InkWell(
-            onTap: () => _triggerOption(i),
-            borderRadius: BorderRadius.circular(28),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 110),
-                  width: selected ? 44 : 38,
-                  height: selected ? 44 : 38,
-                  decoration: BoxDecoration(
-                    color: selected ? const Color(0xFFE65312) : const Color(0xCC222630),
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: selected ? Colors.white : Colors.white24,
-                      width: selected ? 1.8 : 1,
+          final selected = _selectedOptionIdx == i;
+          final item = options[i];
+          return Padding(
+            padding: const EdgeInsets.only(right: 20),
+            child: InkWell(
+              onTap: () => _triggerOption(i),
+              borderRadius: BorderRadius.circular(28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 110),
+                    width: selected ? 44 : 38,
+                    height: selected ? 44 : 38,
+                    decoration: BoxDecoration(
+                      color: selected ? const Color(0xFFE65312) : Colors.black.withValues(alpha: 0.35),
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: selected ? Colors.white : Colors.white38,
+                        width: selected ? 1.8 : 1,
+                      ),
+                    ),
+                    child: Icon(
+                      item.$1,
+                      color: Colors.white,
+                      size: selected ? 22 : 19,
                     ),
                   ),
-                  child: Icon(
-                    item.$1,
-                    color: Colors.white,
-                    size: selected ? 22 : 19,
+                  const SizedBox(height: 4),
+                  Text(
+                    item.$2,
+                    style: TextStyle(
+                      color: selected ? Colors.white : const Color(0xFFE5E9F0),
+                      fontSize: 11.5,
+                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                      shadows: _textShadows,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  item.$2,
-                  style: TextStyle(
-                    color: selected ? Colors.white : const Color(0xFFBFC4CF),
-                    fontSize: 11.5,
-                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  Text(
+                    item.$3,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: selected ? const Color(0xFFFFB74D) : const Color(0xFFD0D5E0),
+                      fontSize: 9.5,
+                      fontWeight: FontWeight.w600,
+                      shadows: _textShadows,
+                    ),
                   ),
-                ),
-                Text(
-                  item.$3,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: selected ? const Color(0xFFFFB74D) : Colors.white54,
-                    fontSize: 9.5,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        );
-      }),
+          );
+        }),
       ),
     );
   }
@@ -3016,7 +2836,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
             : 'Screen Stretch Mode';
 
     return Container(
-      color: Colors.black.withValues(alpha: 0.45),
+      color: Colors.black.withValues(alpha: 0.35),
       alignment: Alignment.center,
       child: GestureDetector(
         onTap: () {},
@@ -3025,7 +2845,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
           constraints: const BoxConstraints(maxHeight: 320),
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: const Color(0xF511141C),
+            color: const Color(0xE611141C),
             borderRadius: BorderRadius.circular(14),
             border: Border.all(color: Colors.white24),
           ),
@@ -3118,104 +2938,73 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   }
 }
 
-class _StbBadge extends StatelessWidget {
-  final String text;
-  const _StbBadge({required this.text});
+class _ProgramPoster extends StatefulWidget {
+  final String primaryUrl;
+  final String fallbackUrl;
+  final String channelLogo;
+  final String channelFallbackLogo;
+
+  const _ProgramPoster({
+    required this.primaryUrl,
+    required this.fallbackUrl,
+    required this.channelLogo,
+    required this.channelFallbackLogo,
+  });
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-      decoration: BoxDecoration(
-        color: Colors.white12,
-        borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: Colors.white24, width: 0.8),
-      ),
-      child: Text(
-        text,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.3,
-        ),
-      ),
-    );
-  }
+  State<_ProgramPoster> createState() => _ProgramPosterState();
 }
 
-class _HindiTrendingCard extends StatelessWidget {
-  final _HindiTrendingItem item;
-  final VoidCallback onTap;
+class _ProgramPosterState extends State<_ProgramPoster> {
+  int _attempt = 0;
 
-  const _HindiTrendingCard({required this.item, required this.onTap});
+  @override
+  void didUpdateWidget(covariant _ProgramPoster oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.primaryUrl != widget.primaryUrl ||
+        oldWidget.fallbackUrl != widget.fallbackUrl ||
+        oldWidget.channelLogo != widget.channelLogo) {
+      _attempt = 0;
+    }
+  }
+
+  List<String> get _candidates => [
+        widget.primaryUrl,
+        widget.fallbackUrl,
+        widget.channelLogo,
+        widget.channelFallbackLogo,
+      ].where((u) => u.trim().isNotEmpty).toSet().toList();
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        width: 158,
-        height: 70,
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              item.accent.withValues(alpha: 0.92),
-              const Color(0xFF10131A),
-            ],
-          ),
-          border: Border.all(color: Colors.white24, width: 0.9),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Row(
-              children: [
-                Icon(item.icon, color: Colors.white, size: 12),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: Text(
-                    item.badge,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Color(0xFFFFD54F),
-                      fontSize: 9.5,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.3,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            Text(
-              item.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 11.5,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            Text(
-              item.subtitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white70,
-                fontSize: 9.5,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ],
-        ),
+    final urls = _candidates;
+    if (_attempt >= urls.length) {
+      return const Center(
+        child: Icon(Icons.live_tv_rounded, size: 38, color: Colors.white70),
+      );
+    }
+    final url = urls[_attempt];
+    final isChannelFallbackLogo = url == widget.channelLogo || url == widget.channelFallbackLogo;
+
+    return Container(
+      color: isChannelFallbackLogo ? Colors.white.withValues(alpha: 0.92) : Colors.black26,
+      padding: isChannelFallbackLogo ? const EdgeInsets.all(10) : EdgeInsets.zero,
+      child: Image.network(
+        url,
+        fit: isChannelFallbackLogo ? BoxFit.contain : BoxFit.cover,
+        width: double.infinity,
+        height: double.infinity,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) {
+          if (_attempt + 1 < urls.length) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) setState(() => _attempt++);
+            });
+          }
+          return const Center(
+            child: Icon(Icons.live_tv_rounded, size: 38, color: Colors.white70),
+          );
+        },
       ),
     );
   }
