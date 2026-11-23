@@ -22,6 +22,8 @@ class _AnasTvAppState extends State<AnasTvApp> {
   @override
   void initState() {
     super.initState();
+    PaintingBinding.instance.imageCache.maximumSize = 500;
+    PaintingBinding.instance.imageCache.maximumSizeBytes = 128 << 20;
     _detectDeviceMode();
   }
 
@@ -438,6 +440,11 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
   static const extraUrl = 'https://api.npoint.io/9db02feba76eb297fc65';
 
   final List<String> _debugErrors = [];
+  final ScrollController _tabScroll = ScrollController();
+  final ScrollController _gridScroll = ScrollController();
+  final Map<int, FocusNode> _tabNodes = {};
+  final Map<int, FocusNode> _cardNodes = {};
+
   List<TvChannel> allChannels = [];
   List<String> filterTabs = ['ALL'];
   String selectedTab = 'ALL';
@@ -448,6 +455,9 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
       int.tryParse(value?.toString() ?? '') ?? fallback;
 
   String _category(int id) => categories[id] ?? 'General';
+
+  FocusNode _tabNode(int index) => _tabNodes.putIfAbsent(index, () => FocusNode());
+  FocusNode _cardNode(int index) => _cardNodes.putIfAbsent(index, () => FocusNode());
 
   (String, String) _logoUrls(String raw) {
     final clean = raw.trim().replaceFirst(RegExp(r'^/+'), '');
@@ -464,6 +474,34 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
   void initState() {
     super.initState();
     _loadChannels();
+  }
+
+  @override
+  void didUpdateWidget(covariant AnasTvHomePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!oldWidget.isTv && widget.isTv && !loading && error == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (_filteredChannels.isNotEmpty) {
+          _focusCard(0);
+        } else {
+          _focusSelectedTab();
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _tabScroll.dispose();
+    _gridScroll.dispose();
+    for (final n in _tabNodes.values) {
+      n.dispose();
+    }
+    for (final n in _cardNodes.values) {
+      n.dispose();
+    }
+    super.dispose();
   }
 
   Future<List<TvChannel>> _fetchJio() async {
@@ -656,6 +694,11 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
           selectedTab = 'ALL';
         }
       });
+      if (widget.isTv) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _filteredChannels.isNotEmpty) _focusCard(0);
+        });
+      }
     } catch (e) {
       if (mounted) setState(() => error = e.toString().replaceFirst('Exception: ', ''));
     } finally {
@@ -671,10 +714,142 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
         .toList();
   }
 
-  void _openChannel(TvChannel channel) {
-    Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => AnasTvPlayerScreen(channel: channel, isTv: widget.isTv),
-    ));
+  int get _selectedTabIndex {
+    final idx = filterTabs.indexWhere((t) => t.toLowerCase() == selectedTab.toLowerCase());
+    return idx >= 0 ? idx : 0;
+  }
+
+  void _focusSelectedTab() {
+    if (!widget.isTv || filterTabs.isEmpty) return;
+    _tabNode(_selectedTabIndex).requestFocus();
+  }
+
+  void _selectTab(String label) {
+    setState(() => selectedTab = label);
+    if (_gridScroll.hasClients) {
+      _gridScroll.jumpTo(0);
+    }
+  }
+
+  void _focusCard(int targetIndex) {
+    final node = _cardNodes[targetIndex];
+    if (node != null && node.canRequestFocus && node.context != null) {
+      node.requestFocus();
+      return;
+    }
+    if (targetIndex == 0 && _gridScroll.hasClients) {
+      _gridScroll.jumpTo(0);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final n = _cardNodes[0];
+        if (n != null && n.canRequestFocus) n.requestFocus();
+      });
+    }
+  }
+
+  KeyEventResult _handleTabKey(int tabIndex, KeyEvent event) {
+    if (!widget.isTv || event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter) {
+      if (tabIndex >= 0 && tabIndex < filterTabs.length) {
+        _selectTab(filterTabs[tabIndex]);
+      }
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      if (tabIndex > 0) _tabNode(tabIndex - 1).requestFocus();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowRight) {
+      if (tabIndex + 1 < filterTabs.length) _tabNode(tabIndex + 1).requestFocus();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown) {
+      if (_filteredChannels.isNotEmpty) _focusCard(0);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowUp) {
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  KeyEventResult _handleCardKey(int index, int columns, int totalCount, KeyEvent event) {
+    if (!widget.isTv || event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    final row = index ~/ columns;
+    final col = index % columns;
+    final isFirstRowLastItem = row == 0 && (col == columns - 1 || index == totalCount - 1);
+
+    if (key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter) {
+      final filtered = _filteredChannels;
+      if (index >= 0 && index < filtered.length) {
+        _openChannel(filtered[index], restoreCardIndex: index);
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      if (row == 0 && col == 0) {
+        _focusSelectedTab();
+        return KeyEventResult.handled;
+      }
+      if (index > 0) {
+        _focusCard(index - 1);
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowRight) {
+      if (isFirstRowLastItem) {
+        _focusSelectedTab();
+        return KeyEventResult.handled;
+      }
+      if (index + 1 < totalCount) {
+        _focusCard(index + 1);
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowUp) {
+      if (row == 0) {
+        _focusSelectedTab();
+        return KeyEventResult.handled;
+      }
+      _focusCard(index - columns);
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowDown) {
+      if (index + columns < totalCount) {
+        _focusCard(index + columns);
+      } else if ((row + 1) * columns < totalCount) {
+        _focusCard(totalCount - 1);
+      }
+      return KeyEventResult.handled;
+    }
+
+    return KeyEventResult.ignored;
+  }
+
+  void _openChannel(TvChannel channel, {int? restoreCardIndex}) {
+    Navigator.of(context)
+        .push(PageRouteBuilder<void>(
+          transitionDuration: widget.isTv ? Duration.zero : const Duration(milliseconds: 180),
+          reverseTransitionDuration: Duration.zero,
+          pageBuilder: (_, __, ___) => AnasTvPlayerScreen(channel: channel, isTv: widget.isTv),
+        ))
+        .then((_) {
+          if (widget.isTv && restoreCardIndex != null && mounted) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _focusCard(restoreCardIndex);
+            });
+          }
+        });
   }
 
   @override
@@ -684,10 +859,12 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
       builder: (context, constraints) {
         final width = constraints.maxWidth;
         final columns = widget.isTv ? 8 : (width >= 700 ? 6 : 4);
-        final gap = widget.isTv ? 10.0 : (width >= 700 ? 12.0 : 8.0);
+        final gap = widget.isTv ? 14.0 : (width >= 700 ? 12.0 : 8.0);
         return GridView.builder(
+          controller: _gridScroll,
           cacheExtent: 260,
-          padding: EdgeInsets.fromLTRB(gap, gap, gap, gap + 4),
+          clipBehavior: Clip.none,
+          padding: EdgeInsets.fromLTRB(gap, gap, gap, gap + 8),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: columns,
             mainAxisSpacing: gap,
@@ -699,8 +876,12 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
             child: _ChannelCard(
               channel: filtered[index],
               isTv: widget.isTv,
+              focusNode: widget.isTv ? _cardNode(index) : null,
               autofocus: widget.isTv && index == 0,
-              onTap: () => _openChannel(filtered[index]),
+              onKeyEvent: widget.isTv
+                  ? (node, event) => _handleCardKey(index, columns, filtered.length, event)
+                  : null,
+              onTap: () => _openChannel(filtered[index], restoreCardIndex: index),
             ),
           ),
         );
@@ -710,37 +891,39 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
     return Scaffold(
       backgroundColor: const Color(0xFF050505),
       body: SafeArea(
-        child: FocusTraversalGroup(
-          policy: ReadingOrderTraversalPolicy(),
-          child: Column(
-            children: [
-              if (!loading && error == null && filterTabs.length > 1)
-                Container(
-                  height: 44,
-                  width: double.infinity,
-                  decoration: const BoxDecoration(
-                    color: Color(0xFF050505),
-                    border: Border(
-                      bottom: BorderSide(color: Color(0xFF1F1F1F), width: 1),
-                    ),
-                  ),
-                  child: ListView.builder(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    itemCount: filterTabs.length,
-                    itemBuilder: (context, index) {
-                      final label = filterTabs[index];
-                      final selected = label.toLowerCase() == selectedTab.toLowerCase();
-                      return _CategoryTab(
-                        label: label.toUpperCase(),
-                        selected: selected,
-                        isTv: widget.isTv,
-                        onTap: () => setState(() => selectedTab = label),
-                      );
-                    },
+        child: Column(
+          children: [
+            if (!loading && error == null && filterTabs.length > 1)
+              Container(
+                height: 44,
+                width: double.infinity,
+                decoration: const BoxDecoration(
+                  color: Color(0xFF050505),
+                  border: Border(
+                    bottom: BorderSide(color: Color(0xFF1F1F1F), width: 1),
                   ),
                 ),
-              Expanded(
+                child: ListView.builder(
+                  controller: _tabScroll,
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  itemCount: filterTabs.length,
+                  itemBuilder: (context, index) {
+                    final label = filterTabs[index];
+                    final selected = label.toLowerCase() == selectedTab.toLowerCase();
+                    return _CategoryTab(
+                      label: label.toUpperCase(),
+                      selected: selected,
+                      isTv: widget.isTv,
+                      focusNode: widget.isTv ? _tabNode(index) : null,
+                      onKeyEvent: widget.isTv ? (node, event) => _handleTabKey(index, event) : null,
+                      onTap: () => _selectTab(label),
+                    );
+                  },
+                ),
+              ),
+            Expanded(
+              child: ClipRect(
                 child: loading
                     ? const Center(child: _BrandCircularLoader(size: 80))
                     : error != null
@@ -780,8 +963,8 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
                                     child: gridWidget,
                                   ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -792,6 +975,8 @@ class _CategoryTab extends StatefulWidget {
   final String label;
   final bool selected;
   final bool isTv;
+  final FocusNode? focusNode;
+  final FocusOnKeyEventCallback? onKeyEvent;
   final VoidCallback onTap;
 
   const _CategoryTab({
@@ -799,6 +984,8 @@ class _CategoryTab extends StatefulWidget {
     required this.selected,
     required this.isTv,
     required this.onTap,
+    this.focusNode,
+    this.onKeyEvent,
   });
 
   @override
@@ -813,40 +1000,49 @@ class _CategoryTabState extends State<_CategoryTab> {
     final active = widget.selected;
     final showTvFocus = widget.isTv && focused;
 
-    return InkWell(
+    return Focus(
+      focusNode: widget.focusNode,
       canRequestFocus: widget.isTv,
-      splashColor: Colors.transparent,
-      highlightColor: Colors.transparent,
-      hoverColor: Colors.transparent,
-      focusColor: Colors.transparent,
+      onKeyEvent: widget.onKeyEvent,
       onFocusChange: (v) {
-        if (widget.isTv) setState(() => focused = v);
+        if (widget.isTv) {
+          setState(() => focused = v);
+          if (v) {
+            Scrollable.ensureVisible(
+              context,
+              alignment: 0.5,
+              duration: const Duration(milliseconds: 120),
+            );
+          }
+        }
       },
-      onTap: widget.onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          border: Border(
-            bottom: BorderSide(
-              color: active
-                  ? const Color(0xFFE65312)
-                  : (showTvFocus ? Colors.white70 : Colors.transparent),
-              width: 2.5,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: showTvFocus ? const Color(0xFF23262F) : Colors.transparent,
+            border: Border(
+              bottom: BorderSide(
+                color: active ? const Color(0xFFE65312) : Colors.transparent,
+                width: 2.5,
+              ),
             ),
           ),
-        ),
-        child: Text(
-          widget.label,
-          maxLines: 1,
-          softWrap: false,
-          style: TextStyle(
-            fontSize: 12.5,
-            letterSpacing: 0.35,
-            fontWeight: active || showTvFocus ? FontWeight.w700 : FontWeight.w600,
-            color: showTvFocus
-                ? Colors.white
-                : (active ? const Color(0xFFE65312) : const Color(0xFFD0D4DC)),
+          child: Text(
+            widget.label,
+            maxLines: 1,
+            softWrap: false,
+            style: TextStyle(
+              fontSize: 12.5,
+              letterSpacing: 0.35,
+              fontWeight: active || showTvFocus ? FontWeight.w700 : FontWeight.w600,
+              color: active
+                  ? const Color(0xFFE65312)
+                  : (showTvFocus ? Colors.white : const Color(0xFFD0D4DC)),
+            ),
           ),
         ),
       ),
@@ -875,6 +1071,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   ResolvedPlayback? _resolved;
   String? _error;
   bool _loading = true;
+  bool _isExiting = false;
   MethodChannel? _channel;
   Timer? _watchdog;
 
@@ -979,8 +1176,33 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     });
   }
 
+  Future<void> _exitPlayer() async {
+    if (_isExiting) return;
+    _isExiting = true;
+    _watchdog?.cancel();
+    if (!widget.isTv) {
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      await SystemChrome.setPreferredOrientations(const [DeviceOrientation.portraitUp]);
+    }
+    if (mounted && Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  Future<void> _handleBack() async {
+    if (widget.isTv) {
+      final visible = await _channel?.invokeMethod<bool>('isControllerVisible') ?? false;
+      if (visible) {
+        await _channel?.invokeMethod('hideController');
+        if (mounted) _playerFocus.requestFocus();
+        return;
+      }
+    }
+    await _exitPlayer();
+  }
+
   KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    if (!widget.isTv || event is! KeyDownEvent) return KeyEventResult.ignored;
     final key = event.logicalKey;
 
     if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
@@ -1015,101 +1237,98 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     return KeyEventResult.ignored;
   }
 
-  Future<void> _handleBack() async {
-    if (widget.isTv) {
-      final visible = await _channel?.invokeMethod<bool>('isControllerVisible') ?? false;
-      if (visible) {
-        await _channel?.invokeMethod('hideController');
-        return;
-      }
-    }
-    if (mounted) Navigator.of(context).pop();
-  }
-
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Focus(
-        focusNode: _playerFocus,
-        autofocus: widget.isTv,
-        onKeyEvent: _onKeyEvent,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            PlatformViewLink(
-              key: ValueKey(widget.channel.id),
-              viewType: 'anas_tv/media3_player',
-              surfaceFactory: (context, controller) => AndroidViewSurface(
-                controller: controller as AndroidViewController,
-                gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
-                hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) {
+          _handleBack();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Focus(
+          focusNode: _playerFocus,
+          autofocus: widget.isTv,
+          onKeyEvent: widget.isTv ? _onKeyEvent : null,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              PlatformViewLink(
+                key: ValueKey(widget.channel.id),
+                viewType: 'anas_tv/media3_player',
+                surfaceFactory: (context, controller) => AndroidViewSurface(
+                  controller: controller as AndroidViewController,
+                  gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+                  hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+                ),
+                onCreatePlatformView: (params) {
+                  return PlatformViewsService.initExpensiveAndroidView(
+                    id: params.id,
+                    viewType: 'anas_tv/media3_player',
+                    layoutDirection: TextDirection.ltr,
+                    creationParams: const <String, dynamic>{},
+                    creationParamsCodec: const StandardMessageCodec(),
+                    onFocus: () => params.onFocusChanged(true),
+                  )
+                    ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
+                    ..addOnPlatformViewCreatedListener(_created)
+                    ..create();
+                },
               ),
-              onCreatePlatformView: (params) {
-                return PlatformViewsService.initExpensiveAndroidView(
-                  id: params.id,
-                  viewType: 'anas_tv/media3_player',
-                  layoutDirection: TextDirection.ltr,
-                  creationParams: const <String, dynamic>{},
-                  creationParamsCodec: const StandardMessageCodec(),
-                  onFocus: () => params.onFocusChanged(true),
-                )
-                  ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
-                  ..addOnPlatformViewCreatedListener(_created)
-                  ..create();
-              },
-            ),
-            if (_loading) const Center(child: _BrandCircularLoader(size: 84)),
-            if (_error != null)
-              Center(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
+              if (_loading) const Center(child: _BrandCircularLoader(size: 84)),
+              if (_error != null)
+                Center(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.error_outline, color: Colors.orange, size: 38),
+                        const SizedBox(height: 12),
+                        SelectableText(
+                          _error!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                        const SizedBox(height: 16),
+                        TextButton(
+                          onPressed: _exitPlayer,
+                          child: const Text('Back to channels'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              SafeArea(
+                child: Align(
+                  alignment: Alignment.topLeft,
+                  child: Row(
                     children: [
-                      const Icon(Icons.error_outline, color: Colors.orange, size: 38),
-                      const SizedBox(height: 12),
-                      SelectableText(
-                        _error!,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white),
+                      IconButton(
+                        focusNode: _backFocus,
+                        onPressed: _exitPlayer,
+                        icon: const Icon(Icons.arrow_back, color: Colors.white),
                       ),
-                      const SizedBox(height: 16),
-                      TextButton(
-                        onPressed: () => Navigator.of(context).pop(),
-                        child: const Text('Back to channels'),
+                      Expanded(
+                        child: Text(
+                          widget.channel.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
                     ],
                   ),
                 ),
               ),
-            SafeArea(
-              child: Align(
-                alignment: Alignment.topLeft,
-                child: Row(
-                  children: [
-                    IconButton(
-                      focusNode: _backFocus,
-                      onPressed: () => Navigator.of(context).pop(),
-                      icon: const Icon(Icons.arrow_back, color: Colors.white),
-                    ),
-                    Expanded(
-                      child: Text(
-                        widget.channel.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -1120,6 +1339,8 @@ class _ChannelCard extends StatefulWidget {
   final TvChannel channel;
   final bool isTv;
   final bool autofocus;
+  final FocusNode? focusNode;
+  final FocusOnKeyEventCallback? onKeyEvent;
   final VoidCallback onTap;
 
   const _ChannelCard({
@@ -1127,6 +1348,8 @@ class _ChannelCard extends StatefulWidget {
     required this.isTv,
     required this.onTap,
     this.autofocus = false,
+    this.focusNode,
+    this.onKeyEvent,
   });
 
   @override
@@ -1135,10 +1358,36 @@ class _ChannelCard extends StatefulWidget {
 
 class _ChannelCardState extends State<_ChannelCard> {
   bool focused = false;
+  bool hovered = false;
+
+  void _ensureVisible() {
+    final ro = context.findRenderObject();
+    if (ro == null || !ro.attached) return;
+    final scrollable = Scrollable.maybeOf(context);
+    if (scrollable == null) return;
+    final viewport = RenderAbstractViewport.maybeOf(ro);
+    if (viewport == null) return;
+    final pos = scrollable.position;
+    final topOffset = viewport.getOffsetToReveal(ro, 0.0).offset - 14.0;
+    final bottomOffset = viewport.getOffsetToReveal(ro, 1.0).offset + 14.0;
+    if (pos.pixels < bottomOffset) {
+      pos.animateTo(
+        bottomOffset.clamp(pos.minScrollExtent, pos.maxScrollExtent),
+        duration: const Duration(milliseconds: 90),
+        curve: Curves.easeOut,
+      );
+    } else if (pos.pixels > topOffset) {
+      pos.animateTo(
+        topOffset.clamp(pos.minScrollExtent, pos.maxScrollExtent),
+        duration: const Duration(milliseconds: 90),
+        curve: Curves.easeOut,
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final showTvFocus = widget.isTv && focused;
+    final showTvFocus = widget.isTv && (focused || hovered);
     final cardColor = showTvFocus ? const Color(0xFFE65312) : const Color(0xFF080808);
     return LayoutBuilder(builder: (context, box) {
       final w = box.maxWidth;
@@ -1146,75 +1395,81 @@ class _ChannelCardState extends State<_ChannelCard> {
       final logoSize = math.min(w * 0.68, h * 0.65);
       final nameSize = (w * 0.13).clamp(9.0, 16.0).toDouble();
       return AnimatedScale(
-        scale: showTvFocus ? 1.07 : 1.0,
-        duration: const Duration(milliseconds: 90),
+        scale: showTvFocus ? 1.16 : 1.0,
+        duration: const Duration(milliseconds: 85),
         curve: Curves.easeOut,
-        child: Material(
-          color: cardColor,
-          borderRadius: BorderRadius.circular(8),
-          child: InkWell(
-            autofocus: widget.autofocus,
-            canRequestFocus: widget.isTv,
-            splashColor: Colors.transparent,
-            highlightColor: Colors.transparent,
-            hoverColor: Colors.transparent,
-            focusColor: Colors.transparent,
-            borderRadius: BorderRadius.circular(8),
-            onFocusChange: (value) {
-              if (widget.isTv) setState(() => focused = value);
+        child: Focus(
+          focusNode: widget.focusNode,
+          autofocus: widget.autofocus,
+          canRequestFocus: widget.isTv,
+          onKeyEvent: widget.onKeyEvent,
+          onFocusChange: (value) {
+            if (widget.isTv) {
+              setState(() => focused = value);
+              if (value) _ensureVisible();
+            }
+          },
+          child: MouseRegion(
+            onEnter: (_) {
+              if (widget.isTv) setState(() => hovered = true);
             },
-            onTap: widget.onTap,
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(4, 6, 4, 5),
-              decoration: BoxDecoration(
-                color: cardColor,
-                border: showTvFocus
-                    ? null
-                    : Border.all(color: const Color(0xFFD94B0A), width: 1.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  SizedBox(
-                    width: logoSize,
-                    height: logoSize,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: showTvFocus ? Colors.white : const Color(0xFFD94B0A),
-                          width: 1.1,
-                        ),
-                      ),
-                      clipBehavior: Clip.antiAlias,
-                      padding: EdgeInsets.all(logoSize * 0.08),
-                      child: _ChannelLogo(
-                        primaryUrl: widget.channel.logo,
-                        fallbackUrl: widget.channel.fallbackLogo,
-                      ),
-                    ),
-                  ),
-                  SizedBox(
-                    height: nameSize * 1.38,
-                    width: double.infinity,
-                    child: Center(
-                      child: _ChannelMarquee(
-                        text: widget.channel.name,
-                        animate: !widget.isTv || showTvFocus,
-                        style: TextStyle(
+            onExit: (_) {
+              if (widget.isTv) setState(() => hovered = false);
+            },
+            child: GestureDetector(
+              onTap: widget.onTap,
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(4, 6, 4, 5),
+                decoration: BoxDecoration(
+                  color: cardColor,
+                  border: showTvFocus
+                      ? null
+                      : Border.all(color: const Color(0xFFD94B0A), width: 1.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    SizedBox(
+                      width: logoSize,
+                      height: logoSize,
+                      child: Container(
+                        decoration: BoxDecoration(
                           color: Colors.white,
-                          fontSize: nameSize,
-                          height: 1.05,
-                          fontWeight: showTvFocus ? FontWeight.w700 : FontWeight.w500,
-                          fontFamily: 'Roboto',
-                          letterSpacing: -.2,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: showTvFocus ? Colors.white : const Color(0xFFD94B0A),
+                            width: 1.1,
+                          ),
+                        ),
+                        clipBehavior: Clip.antiAlias,
+                        padding: EdgeInsets.all(logoSize * 0.08),
+                        child: _ChannelLogo(
+                          primaryUrl: widget.channel.logo,
+                          fallbackUrl: widget.channel.fallbackLogo,
                         ),
                       ),
                     ),
-                  ),
-                ],
+                    SizedBox(
+                      height: nameSize * 1.38,
+                      width: double.infinity,
+                      child: Center(
+                        child: _ChannelMarquee(
+                          text: widget.channel.name,
+                          animate: !widget.isTv || showTvFocus,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: nameSize,
+                            height: 1.05,
+                            fontWeight: showTvFocus ? FontWeight.w700 : FontWeight.w500,
+                            fontFamily: 'Roboto',
+                            letterSpacing: -.2,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
