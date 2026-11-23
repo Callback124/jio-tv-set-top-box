@@ -2983,36 +2983,28 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                                                   ),
                                                 ),
                                               ),
-                                              const SizedBox(width: 12),
+                                              const SizedBox(width: 8),
                                               InkWell(
                                                 onTap: () => _showBanner(openOptions: !_optionsMode),
-                                                borderRadius: BorderRadius.circular(14),
+                                                borderRadius: BorderRadius.circular(6),
+                                                hoverColor: Colors.white.withValues(alpha: 0.16),
+                                                focusColor: Colors.white.withValues(alpha: 0.22),
+                                                highlightColor: Colors.white.withValues(alpha: 0.12),
                                                 child: Container(
-                                                  padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 4),
+                                                  width: compactLayout ? 32 : 36,
+                                                  height: compactLayout ? 32 : 36,
+                                                  alignment: Alignment.center,
                                                   decoration: BoxDecoration(
                                                     color: _optionsMode
-                                                        ? const Color(0xFFE65312)
-                                                        : Colors.white.withValues(alpha: 0.92),
-                                                    borderRadius: BorderRadius.circular(14),
+                                                        ? Colors.white.withValues(alpha: 0.22)
+                                                        : Colors.transparent,
+                                                    borderRadius: BorderRadius.circular(6),
                                                   ),
-                                                  child: Row(
-                                                    mainAxisSize: MainAxisSize.min,
-                                                    children: [
-                                                      Icon(
-                                                        Icons.tune_rounded,
-                                                        size: 13,
-                                                        color: _optionsMode ? Colors.white : Colors.black,
-                                                      ),
-                                                      const SizedBox(width: 4),
-                                                      Text(
-                                                        'Options',
-                                                        style: TextStyle(
-                                                          color: _optionsMode ? Colors.white : Colors.black,
-                                                          fontSize: 11.5,
-                                                          fontWeight: FontWeight.w700,
-                                                        ),
-                                                      ),
-                                                    ],
+                                                  child: Icon(
+                                                    Icons.tune_rounded,
+                                                    size: compactLayout ? 19 : 21,
+                                                    color: Colors.white,
+                                                    shadows: _textShadows,
                                                   ),
                                                 ),
                                               ),
@@ -3148,36 +3140,36 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
           final selected = _selectedOptionIdx == i;
           final item = options[i];
           return Padding(
-            padding: const EdgeInsets.only(right: 20),
+            padding: const EdgeInsets.only(right: 18),
             child: InkWell(
               onTap: () => _triggerOption(i),
-              borderRadius: BorderRadius.circular(28),
+              borderRadius: BorderRadius.circular(6),
+              hoverColor: Colors.white.withValues(alpha: 0.16),
+              focusColor: Colors.white.withValues(alpha: 0.22),
+              highlightColor: Colors.white.withValues(alpha: 0.12),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   AnimatedContainer(
                     duration: const Duration(milliseconds: 110),
-                    width: selected ? 44 : 38,
-                    height: selected ? 44 : 38,
+                    width: 42,
+                    height: 42,
                     decoration: BoxDecoration(
-                      color: selected ? const Color(0xFFE65312) : Colors.black.withValues(alpha: 0.35),
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: selected ? Colors.white : Colors.white38,
-                        width: selected ? 1.8 : 1,
-                      ),
+                      color: selected ? Colors.white.withValues(alpha: 0.22) : Colors.transparent,
+                      borderRadius: BorderRadius.circular(6),
                     ),
                     child: Icon(
                       item.$1,
-                      color: Colors.white,
-                      size: selected ? 22 : 19,
+                      color: selected ? Colors.white : Colors.white.withValues(alpha: 0.85),
+                      size: 21,
+                      shadows: _textShadows,
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     item.$2,
                     style: TextStyle(
-                      color: selected ? Colors.white : const Color(0xFFE5E9F0),
+                      color: selected ? Colors.white : const Color(0xFFE0E5EE),
                       fontSize: 11.5,
                       fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                       shadows: _textShadows,
@@ -3188,7 +3180,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      color: selected ? const Color(0xFFFFB74D) : const Color(0xFFD0D5E0),
+                      color: selected ? Colors.white.withValues(alpha: 0.90) : const Color(0xFFB8C0CE),
                       fontSize: 9.5,
                       fontWeight: FontWeight.w600,
                       shadows: _textShadows,
@@ -3212,7 +3204,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
             : 'Screen Stretch Mode';
 
     return Container(
-      color: Colors.black.withValues(alpha: 0.35),
+      color: Colors.black.withValues(alpha: 0.24),
       alignment: Alignment.center,
       child: GestureDetector(
         onTap: () {},
@@ -3221,9 +3213,8 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
           constraints: const BoxConstraints(maxHeight: 320),
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: const Color(0xE611141C),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: Colors.white24),
+            color: Colors.black.withValues(alpha: 0.58),
+            borderRadius: BorderRadius.circular(6),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -3237,6 +3228,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                       color: Colors.white,
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
+                      shadows: _textShadows,
                     ),
                   ),
                   const Spacer(),
@@ -3246,7 +3238,12 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                         setState(() => _openPicker = null);
                         _scheduleBannerAutoHide();
                       },
-                      child: const Icon(Icons.close_rounded, color: Colors.white70, size: 20),
+                      borderRadius: BorderRadius.circular(4),
+                      hoverColor: Colors.white.withValues(alpha: 0.16),
+                      child: const Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Icon(Icons.close_rounded, color: Colors.white70, size: 20),
+                      ),
                     ),
                 ],
               ),
@@ -3255,7 +3252,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                 const Padding(
                   padding: EdgeInsets.all(24),
                   child: Center(
-                    child: CircularProgressIndicator(color: Color(0xFFE65312), strokeWidth: 2.5),
+                    child: CircularProgressIndicator(color: Colors.white70, strokeWidth: 2.5),
                   ),
                 )
               else
@@ -3269,15 +3266,18 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                       final active = item['selected'] == true;
                       return InkWell(
                         onTap: () => _applyPickerSelection(idx),
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.circular(4),
+                        hoverColor: Colors.white.withValues(alpha: 0.16),
+                        focusColor: Colors.white.withValues(alpha: 0.22),
+                        highlightColor: Colors.white.withValues(alpha: 0.12),
                         child: Container(
-                          margin: const EdgeInsets.symmetric(vertical: 3),
+                          margin: const EdgeInsets.symmetric(vertical: 2),
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                           decoration: BoxDecoration(
                             color: focused
-                                ? const Color(0xFFE65312)
-                                : const Color(0xFF1A1E29),
-                            borderRadius: BorderRadius.circular(8),
+                                ? Colors.white.withValues(alpha: 0.22)
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(4),
                           ),
                           child: Row(
                             children: [
@@ -3287,17 +3287,18 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
-                                    color: Colors.white,
+                                    color: focused || active ? Colors.white : Colors.white.withValues(alpha: 0.86),
                                     fontSize: 13.5,
                                     fontWeight: focused || active ? FontWeight.w700 : FontWeight.w500,
+                                    shadows: _textShadows,
                                   ),
                                 ),
                               ),
                               if (active)
-                                Icon(
-                                  Icons.check_circle_rounded,
+                                const Icon(
+                                  Icons.check_rounded,
                                   size: 18,
-                                  color: focused ? Colors.white : const Color(0xFFE65312),
+                                  color: Colors.white,
                                 ),
                             ],
                           ),
