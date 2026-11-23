@@ -2,26 +2,20 @@ package com.anas.tv
 
 import android.content.Context
 import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.StateListDrawable
 import android.media.MediaDrm
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
-import android.view.FocusFinder
-import android.view.KeyEvent
 import android.view.View
-import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.widget.ImageButton
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -29,12 +23,14 @@ import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
 import androidx.media3.exoplayer.drm.FrameworkMediaDrm
 import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
 
 @OptIn(UnstableApi::class)
 class Media3PlayerView(
@@ -43,54 +39,26 @@ class Media3PlayerView(
     messenger: BinaryMessenger,
     viewId: Int
 ) : PlatformView {
-    private val root = object : FrameLayout(appContext) {
-        override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-            if (isHandledTvKey(event.keyCode)) {
-                if (event.action == KeyEvent.ACTION_DOWN) {
-                    return dispatchTvKey(event.keyCode)
-                }
-                if (event.action == KeyEvent.ACTION_UP) {
-                    return true
-                }
-            }
-            return super.dispatchKeyEvent(event)
-        }
-    }
+    private val root = FrameLayout(appContext)
     private val playerView = PlayerView(appContext)
     private val channel = MethodChannel(messenger, "anas_tv/media3_player_$viewId")
     private var player: ExoPlayer? = null
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var isControllerShown = false
-    private var focusedControl: View? = null
 
     init {
         root.setBackgroundColor(Color.BLACK)
-        root.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        root.isFocusable = false
+        root.isFocusableInTouchMode = false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             root.defaultFocusHighlightEnabled = false
             playerView.defaultFocusHighlightEnabled = false
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            root.foreground = null
-            playerView.foreground = null
-        }
 
-        playerView.useController = true
-        playerView.isFocusable = true
-        playerView.isFocusableInTouchMode = true
-        playerView.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        playerView.useController = false
+        playerView.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
+        playerView.isFocusable = false
+        playerView.isFocusableInTouchMode = false
         playerView.keepScreenOn = true
-        playerView.setControllerAnimationEnabled(false)
-        playerView.setControllerVisibilityListener(
-            PlayerView.ControllerVisibilityListener { visibility ->
-                isControllerShown = (visibility == View.VISIBLE)
-                if (!isControllerShown) {
-                    clearFocusedControl()
-                } else {
-                    mainHandler.post { applyControlFocusStyles(playerView) }
-                }
-            }
-        )
 
         root.addView(
             playerView,
@@ -99,8 +67,6 @@ class Media3PlayerView(
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
         )
-
-        mainHandler.post { applyControlFocusStyles(playerView) }
 
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
@@ -123,15 +89,35 @@ class Media3PlayerView(
                     player?.playWhenReady = true
                     result.success(null)
                 }
-                "dispatchKey" -> {
-                    val keyCode = (call.arguments as? Number)?.toInt() ?: 0
-                    result.success(dispatchTvKey(keyCode))
+                "setResizeMode" -> {
+                    val mode = (call.arguments as? String).orEmpty().lowercase(Locale.ROOT)
+                    playerView.resizeMode = when (mode) {
+                        "fit" -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        "zoom" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        else -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                    }
+                    result.success(null)
                 }
-                "isControllerVisible" -> {
-                    result.success(isControllerVisible())
+                "getAudioTracks" -> {
+                    result.success(collectAudioTracks())
                 }
-                "hideController" -> {
-                    hideNativeController()
+                "setAudioTrack" -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val args = call.arguments as? Map<String, Any?> ?: emptyMap()
+                    val groupIdx = (args["groupIndex"] as? Number)?.toInt() ?: -1
+                    val trackIdx = (args["trackIndex"] as? Number)?.toInt() ?: -1
+                    applyAudioTrack(groupIdx, trackIdx)
+                    result.success(null)
+                }
+                "getVideoQualities" -> {
+                    result.success(collectVideoQualities())
+                }
+                "setVideoQuality" -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val args = call.arguments as? Map<String, Any?> ?: emptyMap()
+                    val groupIdx = (args["groupIndex"] as? Number)?.toInt() ?: -1
+                    val trackIdx = (args["trackIndex"] as? Number)?.toInt() ?: -1
+                    applyVideoQuality(groupIdx, trackIdx)
                     result.success(null)
                 }
                 else -> result.notImplemented()
@@ -139,252 +125,131 @@ class Media3PlayerView(
         }
     }
 
-    private fun isHandledTvKey(keyCode: Int): Boolean = when (keyCode) {
-        KeyEvent.KEYCODE_DPAD_CENTER,
-        KeyEvent.KEYCODE_ENTER,
-        KeyEvent.KEYCODE_NUMPAD_ENTER,
-        KeyEvent.KEYCODE_DPAD_LEFT,
-        KeyEvent.KEYCODE_DPAD_RIGHT,
-        KeyEvent.KEYCODE_DPAD_UP,
-        KeyEvent.KEYCODE_DPAD_DOWN,
-        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
-        KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
-        KeyEvent.KEYCODE_MEDIA_REWIND -> true
-        else -> false
+    private fun collectAudioTracks(): List<Map<String, Any?>> {
+        val exo = player ?: return emptyList()
+        val list = mutableListOf<Map<String, Any?>>()
+        var audioGroupOrdinal = 0
+        for (group in exo.currentTracks.groups) {
+            if (group.type != C.TRACK_TYPE_AUDIO) continue
+            for (i in 0 until group.length) {
+                if (!group.isTrackSupported(i)) continue
+                val fmt = group.getTrackFormat(i)
+                val langCode = fmt.language.orEmpty().trim()
+                val langDisplay = if (langCode.isNotEmpty() && langCode != "und") {
+                    Locale.forLanguageTag(langCode).displayLanguage.replaceFirstChar {
+                        if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString()
+                    }.ifBlank { langCode.uppercase(Locale.ROOT) }
+                } else {
+                    "Audio ${list.size + 1}"
+                }
+                val label = listOfNotNull(
+                    langDisplay,
+                    fmt.label?.takeIf { it.isNotBlank() && !it.equals(langDisplay, ignoreCase = true) },
+                    if (fmt.channelCount >= 6) "5.1" else null
+                ).joinToString(" • ")
+
+                list.add(
+                    mapOf(
+                        "groupIndex" to audioGroupOrdinal,
+                        "trackIndex" to i,
+                        "label" to label,
+                        "selected" to group.isTrackSelected(i)
+                    )
+                )
+            }
+            audioGroupOrdinal++
+        }
+        return list
     }
 
-    @OptIn(UnstableApi::class)
-    private fun isControllerVisible(): Boolean = isControllerShown || playerView.isControllerFullyVisible
+    private fun applyAudioTrack(targetGroupOrdinal: Int, targetTrackIndex: Int) {
+        val exo = player ?: return
+        val builder = exo.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
 
-    @OptIn(UnstableApi::class)
-    private fun hideNativeController() {
-        isControllerShown = false
-        clearFocusedControl()
-        playerView.hideController()
-    }
-
-    private fun buildGreyFocusBackground(context: Context, isSubtle: Boolean = false): StateListDrawable {
-        val density = context.resources.displayMetrics.density
-        val focusedDrawable = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = 999f * density
-            setColor(if (isSubtle) 0x33FFFFFF else 0x55FFFFFF)
-        }
-        return StateListDrawable().apply {
-            addState(intArrayOf(android.R.attr.state_selected), focusedDrawable)
-            addState(intArrayOf(android.R.attr.state_focused), focusedDrawable)
-            addState(intArrayOf(android.R.attr.state_hovered), focusedDrawable)
-            addState(intArrayOf(), ColorDrawable(Color.TRANSPARENT))
-        }
-    }
-
-    private fun applyControlFocusStyles(view: View) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            view.defaultFocusHighlightEnabled = false
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && view !== root && view !== playerView) {
-            view.foreground = null
-        }
-
-        if (view !== root && view !== playerView) {
-            val isAlreadyStyled = view.tag == "anas_tv_styled"
-            if (!isAlreadyStyled) {
-                if (view is ImageButton || (view.isFocusable && view.isClickable && view !is ViewGroup)) {
-                    view.backgroundTintList = null
-                    view.background = buildGreyFocusBackground(view.context, isSubtle = false)
-                    view.tag = "anas_tv_styled"
-                } else if (view.isFocusable && view !is ViewGroup) {
-                    view.backgroundTintList = null
-                    view.background = buildGreyFocusBackground(view.context, isSubtle = true)
-                    view.tag = "anas_tv_styled"
+        if (targetGroupOrdinal >= 0 && targetTrackIndex >= 0) {
+            val audioGroups = exo.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+            if (targetGroupOrdinal < audioGroups.size) {
+                val group = audioGroups[targetGroupOrdinal]
+                if (targetTrackIndex < group.length) {
+                    builder.addOverride(TrackSelectionOverride(group.mediaTrackGroup, targetTrackIndex))
                 }
             }
         }
+        exo.trackSelectionParameters = builder.build()
+    }
 
-        if (view is ViewGroup) {
-            for (i in 0 until view.childCount) {
-                applyControlFocusStyles(view.getChildAt(i))
+    private fun collectVideoQualities(): List<Map<String, Any?>> {
+        val exo = player ?: return listOf(
+            mapOf("groupIndex" to -1, "trackIndex" to -1, "label" to "Auto", "height" to 0, "selected" to true)
+        )
+        val hasExplicitOverride = exo.trackSelectionParameters.overrides.values.any {
+            it.type == C.TRACK_TYPE_VIDEO
+        }
+        val entries = mutableListOf<Map<String, Any?>>()
+        val seenLabels = HashSet<String>()
+        var videoGroupOrdinal = 0
+
+        for (group in exo.currentTracks.groups) {
+            if (group.type != C.TRACK_TYPE_VIDEO) continue
+            for (i in 0 until group.length) {
+                if (!group.isTrackSupported(i)) continue
+                val fmt = group.getTrackFormat(i)
+                val height = fmt.height
+                val bitrateKbps = if (fmt.bitrate > 0) fmt.bitrate / 1000 else 0
+                val label = when {
+                    height >= 2160 -> "4K (${height}p)"
+                    height >= 1080 -> "1080p HD"
+                    height > 0 -> "${height}p"
+                    bitrateKbps > 0 -> "${bitrateKbps} kbps"
+                    else -> "Stream ${i + 1}"
+                }
+                if (!seenLabels.add(label)) continue
+                entries.add(
+                    mapOf(
+                        "groupIndex" to videoGroupOrdinal,
+                        "trackIndex" to i,
+                        "label" to label,
+                        "height" to height,
+                        "selected" to (hasExplicitOverride && group.isTrackSelected(i))
+                    )
+                )
             }
+            videoGroupOrdinal++
         }
+
+        val sorted = entries.sortedByDescending { (it["height"] as? Int) ?: 0 }
+        return listOf(
+            mapOf(
+                "groupIndex" to -1,
+                "trackIndex" to -1,
+                "label" to "Auto (Best)",
+                "height" to 99999,
+                "selected" to !hasExplicitOverride
+            )
+        ) + sorted
     }
 
-    private fun clearFocusedControl() {
-        focusedControl?.isSelected = false
-        focusedControl = null
-    }
+    private fun applyVideoQuality(targetGroupOrdinal: Int, targetTrackIndex: Int) {
+        val exo = player ?: return
+        val builder = exo.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
 
-    private fun selectControl(target: View?) {
-        if (target == null) return
-        applyControlFocusStyles(target)
-        if (focusedControl !== target) {
-            focusedControl?.isSelected = false
-        }
-        focusedControl = target
-        target.isSelected = true
-        target.requestFocus()
-    }
-
-    private fun collectFocusableControls(view: View, out: MutableList<View>) {
-        if (view !== root && view !== playerView) {
-            if (view.visibility != View.VISIBLE) return
-            if (view.isShown && view.isEnabled && view.isFocusable && view !is ViewGroup) {
-                if (view is ImageButton || view.isClickable || view.id == exoProgressId()) {
-                    out.add(view)
-                    return
+        if (targetGroupOrdinal < 0 || targetTrackIndex < 0) {
+            builder.setForceHighestSupportedBitrate(true)
+        } else {
+            builder.setForceHighestSupportedBitrate(false)
+            val videoGroups = exo.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+            if (targetGroupOrdinal < videoGroups.size) {
+                val group = videoGroups[targetGroupOrdinal]
+                if (targetTrackIndex < group.length) {
+                    builder.addOverride(TrackSelectionOverride(group.mediaTrackGroup, targetTrackIndex))
                 }
             }
         }
-        if (view is ViewGroup && view.visibility == View.VISIBLE) {
-            for (i in 0 until view.childCount) {
-                collectFocusableControls(view.getChildAt(i), out)
-            }
-        }
+        exo.trackSelectionParameters = builder.build()
     }
 
-    private fun exoProgressId(): Int =
-        appContext.resources.getIdentifier("exo_progress", "id", appContext.packageName)
-
-    private fun focusInitialControl() {
-        val playPauseId = appContext.resources.getIdentifier("exo_play_pause", "id", appContext.packageName)
-        val playPauseView = if (playPauseId != 0) playerView.findViewById<View>(playPauseId) else null
-        if (playPauseView != null && playPauseView.visibility == View.VISIBLE && playPauseView.isFocusable) {
-            selectControl(playPauseView)
-            return
-        }
-        val controls = mutableListOf<View>()
-        collectFocusableControls(playerView, controls)
-        selectControl(controls.firstOrNull())
-    }
-
-    private fun findNextControl(current: View, direction: Int): View? {
-        val controls = mutableListOf<View>()
-        collectFocusableControls(playerView, controls)
-        if (controls.isEmpty()) return null
-
-        val systemNext = FocusFinder.getInstance().findNextFocus(playerView, current, direction)
-        if (systemNext != null && controls.contains(systemNext) && systemNext !== current) {
-            return systemNext
-        }
-
-        val curPos = IntArray(2)
-        current.getLocationOnScreen(curPos)
-        val curCx = curPos[0] + current.width / 2f
-        val curCy = curPos[1] + current.height / 2f
-
-        var best: View? = null
-        var bestScore = Float.MAX_VALUE
-        val candPos = IntArray(2)
-
-        for (candidate in controls) {
-            if (candidate === current) continue
-            candidate.getLocationOnScreen(candPos)
-            val candCx = candPos[0] + candidate.width / 2f
-            val candCy = candPos[1] + candidate.height / 2f
-            val dx = candCx - curCx
-            val dy = candCy - curCy
-
-            val valid = when (direction) {
-                View.FOCUS_LEFT -> dx < -4f
-                View.FOCUS_RIGHT -> dx > 4f
-                View.FOCUS_UP -> dy < -4f
-                View.FOCUS_DOWN -> dy > 4f
-                else -> false
-            }
-            if (!valid) continue
-
-            val score = when (direction) {
-                View.FOCUS_LEFT, View.FOCUS_RIGHT -> kotlin.math.abs(dx) + kotlin.math.abs(dy) * 2.5f
-                else -> kotlin.math.abs(dy) + kotlin.math.abs(dx) * 1.4f
-            }
-            if (score < bestScore) {
-                bestScore = score
-                best = candidate
-            }
-        }
-        return best
-    }
-
-    @OptIn(UnstableApi::class)
-    private fun dispatchTvKey(keyCode: Int): Boolean {
-        if (keyCode <= 0) return false
-        if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
-            player?.let { it.playWhenReady = !it.playWhenReady }
-            return true
-        }
-        if (keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD) {
-            player?.seekForward()
-            return true
-        }
-        if (keyCode == KeyEvent.KEYCODE_MEDIA_REWIND) {
-            player?.seekBack()
-            return true
-        }
-
-        if (!isControllerVisible()) {
-            isControllerShown = true
-            playerView.showController()
-            mainHandler.post {
-                applyControlFocusStyles(playerView)
-                focusInitialControl()
-            }
-            return true
-        }
-
-        applyControlFocusStyles(playerView)
-        playerView.showController()
-
-        val active = focusedControl?.takeIf { it.isShown && it.visibility == View.VISIBLE }
-            ?: playerView.findFocus()?.takeIf { it !== playerView && it !== root && it.isShown }
-
-        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
-            keyCode == KeyEvent.KEYCODE_ENTER ||
-            keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
-        ) {
-            if (active != null && active.isClickable) {
-                active.performClick()
-            } else {
-                player?.let { it.playWhenReady = !it.playWhenReady }
-            }
-            return true
-        }
-
-        if (active != null && active.id == exoProgressId() && player?.isCurrentMediaItemSeekable == true) {
-            if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
-                player?.seekBack()
-                return true
-            }
-            if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
-                player?.seekForward()
-                return true
-            }
-        }
-
-        val direction = when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_LEFT -> View.FOCUS_LEFT
-            KeyEvent.KEYCODE_DPAD_RIGHT -> View.FOCUS_RIGHT
-            KeyEvent.KEYCODE_DPAD_UP -> View.FOCUS_UP
-            KeyEvent.KEYCODE_DPAD_DOWN -> View.FOCUS_DOWN
-            else -> null
-        }
-
-        if (direction != null) {
-            if (active == null) {
-                focusInitialControl()
-                return true
-            }
-            val next = findNextControl(active, direction)
-            if (next != null) {
-                selectControl(next)
-            }
-            return true
-        }
-
-        val down = KeyEvent(KeyEvent.ACTION_DOWN, keyCode)
-        val up = KeyEvent(KeyEvent.ACTION_UP, keyCode)
-        return playerView.dispatchKeyEvent(down) || playerView.dispatchKeyEvent(up)
-    }
-
-    @OptIn(UnstableApi::class)
     private fun startPlayer(context: Context, streamUrl: String, params: Map<String, Any?>) {
         try {
             val prevPlayer = player
@@ -492,7 +357,6 @@ class Media3PlayerView(
             exoPlayer.setMediaItem(itemBuilder.build())
             exoPlayer.prepare()
             exoPlayer.playWhenReady = true
-            mainHandler.post { applyControlFocusStyles(playerView) }
         } catch (error: Exception) {
             sendError("Player setup error: ${error.message ?: error.javaClass.simpleName}")
         }

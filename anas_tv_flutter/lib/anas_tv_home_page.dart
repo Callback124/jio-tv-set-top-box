@@ -788,7 +788,7 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
         key == LogicalKeyboardKey.numpadEnter) {
       final filtered = _filteredChannels;
       if (index >= 0 && index < filtered.length) {
-        _openChannel(filtered[index], restoreCardIndex: index);
+        _openChannel(filtered, index, restoreCardIndex: index);
       }
       return KeyEventResult.handled;
     }
@@ -914,12 +914,18 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
         });
   }
 
-  void _openChannel(TvChannel channel, {int? restoreCardIndex}) {
+  void _openChannel(List<TvChannel> channels, int initialIndex, {int? restoreCardIndex}) {
+    if (channels.isEmpty) return;
+    final safeIdx = initialIndex.clamp(0, channels.length - 1);
     Navigator.of(context)
         .push(PageRouteBuilder<void>(
           transitionDuration: widget.isTv ? Duration.zero : const Duration(milliseconds: 180),
           reverseTransitionDuration: Duration.zero,
-          pageBuilder: (_, __, ___) => AnasTvPlayerScreen(channel: channel, isTv: widget.isTv),
+          pageBuilder: (_, __, ___) => AnasTvPlayerScreen(
+            channels: channels,
+            initialIndex: safeIdx,
+            isTv: widget.isTv,
+          ),
         ))
         .then((_) {
           _lastSubScreenReturnAt = DateTime.now();
@@ -962,7 +968,7 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
               onKeyEvent: widget.isTv
                   ? (node, event) => _handleCardKey(index, columns, filtered.length, event)
                   : null,
-              onTap: () => _openChannel(filtered[index], restoreCardIndex: index),
+              onTap: () => _openChannel(filtered, index, restoreCardIndex: index),
             ),
           ),
         );
@@ -1209,6 +1215,17 @@ class _AnasTvSearchScreenState extends State<AnasTvSearchScreen> {
         p == PhysicalKeyboardKey.numpad0;
   }
 
+  void _reopenSearchKeyboard() {
+    _ignoreInitialZeroKeys = false;
+    _zeroGuardTimer?.cancel();
+    _searchFocus.unfocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _searchFocus.requestFocus();
+      SystemChannels.textInput.invokeMethod<void>('TextInput.show');
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -1231,6 +1248,15 @@ class _AnasTvSearchScreenState extends State<AnasTvSearchScreen> {
         if (_ignoreInitialZeroKeys && event is KeyDownEvent && !_isZeroKey(event)) {
           _ignoreInitialZeroKeys = false;
           _zeroGuardTimer?.cancel();
+        }
+        final key = event.logicalKey;
+        if (key == LogicalKeyboardKey.select ||
+            key == LogicalKeyboardKey.enter ||
+            key == LogicalKeyboardKey.numpadEnter) {
+          if (event is KeyDownEvent) {
+            _reopenSearchKeyboard();
+          }
+          return KeyEventResult.handled;
         }
         return KeyEventResult.ignored;
       },
@@ -1293,7 +1319,7 @@ class _AnasTvSearchScreenState extends State<AnasTvSearchScreen> {
         key == LogicalKeyboardKey.numpadEnter) {
       final results = _results;
       if (index >= 0 && index < results.length) {
-        _openChannel(results[index], restoreCardIndex: index);
+        _openChannel(results, index, restoreCardIndex: index);
       }
       return KeyEventResult.handled;
     }
@@ -1337,12 +1363,18 @@ class _AnasTvSearchScreenState extends State<AnasTvSearchScreen> {
     return KeyEventResult.ignored;
   }
 
-  void _openChannel(TvChannel channel, {int? restoreCardIndex}) {
+  void _openChannel(List<TvChannel> channels, int initialIndex, {int? restoreCardIndex}) {
+    if (channels.isEmpty) return;
+    final safeIdx = initialIndex.clamp(0, channels.length - 1);
     Navigator.of(context)
         .push(PageRouteBuilder<void>(
           transitionDuration: widget.isTv ? Duration.zero : const Duration(milliseconds: 180),
           reverseTransitionDuration: Duration.zero,
-          pageBuilder: (_, __, ___) => AnasTvPlayerScreen(channel: channel, isTv: widget.isTv),
+          pageBuilder: (_, __, ___) => AnasTvPlayerScreen(
+            channels: channels,
+            initialIndex: safeIdx,
+            isTv: widget.isTv,
+          ),
         ))
         .then((_) {
           if (widget.isTv && restoreCardIndex != null && mounted) {
@@ -1430,6 +1462,12 @@ class _AnasTvSearchScreenState extends State<AnasTvSearchScreen> {
                             ),
                             cursorColor: const Color(0xFFE65312),
                             textInputAction: TextInputAction.search,
+                            onTap: widget.isTv ? _reopenSearchKeyboard : null,
+                            onSubmitted: (_) {
+                              if (widget.isTv && _results.isNotEmpty) {
+                                _focusCard(0);
+                              }
+                            },
                             inputFormatters: widget.isTv
                                 ? [
                                     TextInputFormatter.withFunction((oldValue, newValue) {
@@ -1510,7 +1548,7 @@ class _AnasTvSearchScreenState extends State<AnasTvSearchScreen> {
                                             _handleCardKey(index, columns, results.length, event)
                                         : null,
                                     onTap: () =>
-                                        _openChannel(results[index], restoreCardIndex: index),
+                                        _openChannel(results, index, restoreCardIndex: index),
                                   ),
                                 ),
                               );
@@ -1527,13 +1565,288 @@ class _AnasTvSearchScreenState extends State<AnasTvSearchScreen> {
   }
 }
 
+class _StbProgram {
+  final String title;
+  final String timeLabel;
+  final String description;
+  final String posterUrl;
+  final double progress;
+
+  const _StbProgram({
+    required this.title,
+    required this.timeLabel,
+    required this.description,
+    required this.posterUrl,
+    required this.progress,
+  });
+}
+
+class _ChannelEpg {
+  final _StbProgram live;
+  final _StbProgram next;
+
+  const _ChannelEpg({required this.live, required this.next});
+}
+
+class _HindiTrendingItem {
+  final String badge;
+  final String title;
+  final String subtitle;
+  final Color accent;
+  final IconData icon;
+
+  const _HindiTrendingItem({
+    required this.badge,
+    required this.title,
+    required this.subtitle,
+    required this.accent,
+    required this.icon,
+  });
+}
+
+class _EpgService {
+  static final Map<int, _ChannelEpg> _cache = {};
+  static final math.Random _rng = math.Random();
+
+  static const List<_HindiTrendingItem> _trendingPool = [
+    _HindiTrendingItem(
+      badge: 'LIVE CRICKET',
+      title: 'IND vs AUS Live Match',
+      subtitle: 'Hindi Commentary • Live',
+      accent: Color(0xFF1565C0),
+      icon: Icons.sports_cricket_rounded,
+    ),
+    _HindiTrendingItem(
+      badge: 'WORLD PREMIERE',
+      title: 'Stree 2 (Hindi)',
+      subtitle: 'Superhit Premiere Movie',
+      accent: Color(0xFFC62828),
+      icon: Icons.movie_creation_rounded,
+    ),
+    _HindiTrendingItem(
+      badge: 'HINDI TRENDING',
+      title: 'Taarak Mehta Ka Ooltah...',
+      subtitle: 'Top Trending Comedy Show',
+      accent: Color(0xFFE65312),
+      icon: Icons.trending_up_rounded,
+    ),
+    _HindiTrendingItem(
+      badge: 'PREMIERE MOVIE',
+      title: 'Bhool Bhulaiyaa 3',
+      subtitle: 'Blockbuster Hindi HD',
+      accent: Color(0xFF6A1B9A),
+      icon: Icons.local_movies_rounded,
+    ),
+    _HindiTrendingItem(
+      badge: 'HINDI TRENDING',
+      title: 'Bigg Boss Special',
+      subtitle: 'Live Reality Show',
+      accent: Color(0xFFD84315),
+      icon: Icons.whatshot_rounded,
+    ),
+    _HindiTrendingItem(
+      badge: 'CRICKET LIVE',
+      title: 'T20 Cricket Highlights',
+      subtitle: 'Hindi Sports Trending',
+      accent: Color(0xFF00695C),
+      icon: Icons.sports_score_rounded,
+    ),
+    _HindiTrendingItem(
+      badge: 'BLOCKBUSTER',
+      title: 'Jawan • Hindi Action',
+      subtitle: 'Cinema Premiere',
+      accent: Color(0xFFB71C1C),
+      icon: Icons.star_rounded,
+    ),
+    _HindiTrendingItem(
+      badge: 'HINDI LIVE',
+      title: 'The Kapil Sharma Show',
+      subtitle: 'Trending Weekend Show',
+      accent: Color(0xFF283593),
+      icon: Icons.theater_comedy_rounded,
+    ),
+  ];
+
+  static _HindiTrendingItem pickRandomTrending([_HindiTrendingItem? avoid]) {
+    if (_trendingPool.length <= 1) return _trendingPool.first;
+    _HindiTrendingItem picked;
+    do {
+      picked = _trendingPool[_rng.nextInt(_trendingPool.length)];
+    } while (avoid != null && picked.title == avoid.title);
+    return picked;
+  }
+
+  static String _fmtTime(DateTime dt) {
+    final hour24 = dt.hour;
+    final hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12;
+    final min = dt.minute.toString().padLeft(2, '0');
+    final period = hour24 >= 12 ? 'PM' : 'AM';
+    return '$hour12:$min $period';
+  }
+
+  static String _weekdayShort(int weekday) {
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    return days[(weekday - 1).clamp(0, 6)];
+  }
+
+  static _ChannelEpg fallbackFor(TvChannel ch) {
+    final now = DateTime.now();
+    final slotStartMin = now.minute < 30 ? 0 : 30;
+    final liveStart = DateTime(now.year, now.month, now.day, now.hour, slotStartMin);
+    final liveEnd = liveStart.add(const Duration(minutes: 30));
+    final nextEnd = liveEnd.add(const Duration(minutes: 30));
+    final elapsed = now.difference(liveStart).inSeconds;
+    final progress = (elapsed / 1800.0).clamp(0.06, 0.96);
+    final day = _weekdayShort(now.weekday);
+    final cat = ch.category.toLowerCase();
+
+    late final String liveTitle;
+    late final String liveDesc;
+    late final String nextTitle;
+    late final String nextDesc;
+
+    if (cat.contains('sport')) {
+      liveTitle = '${ch.name} Live Match & Analysis';
+      liveDesc = 'Live stadium action, pitch insights, Hindi commentary aur real-time score updates.';
+      nextTitle = 'Post Match & Trending Highlights';
+      nextDesc = 'Match ke best moments, top wickets aur expert panel analysis.';
+    } else if (cat.contains('movie')) {
+      liveTitle = '${ch.name} Premiere Feature Film';
+      liveDesc = 'Aaj ki blockbuster feature movie HD picture quality aur surround audio ke saath.';
+      nextTitle = 'Mega Night Cinema Special';
+      nextDesc = 'Agli superhit family entertainer film non-stop broadcasting ke saath.';
+    } else if (cat.contains('news')) {
+      liveTitle = 'Breaking News & Live Bulletin';
+      liveDesc = 'Desh aur duniya ki sabse badi khabrein aur live ground reports.';
+      nextTitle = 'Prime Debate & Top Headlines';
+      nextDesc = 'Din bhar ki badi khabron par vishesh charcha aur tezi se updates.';
+    } else if (cat.contains('kid')) {
+      liveTitle = '${ch.name} Cartoon Adventure';
+      liveDesc = 'Bachchon ka pasandida animated show masti aur comedy ke saath.';
+      nextTitle = 'Super Hero Kids Hour';
+      nextDesc = 'Naya episode action aur fun-filled adventures se bhara hua.';
+    } else if (cat.contains('music')) {
+      liveTitle = 'Top Trending Hindi Hits';
+      liveDesc = 'Non-stop Bollywood chartbusters aur latest trending music videos.';
+      nextTitle = 'Retro & Romantic Special';
+      nextDesc = 'Sadaabahar superhit gaane aur viewers choice playlist.';
+    } else {
+      liveTitle = '${ch.name} Prime Show Live';
+      liveDesc = '${ch.name} par abhi dekhein popular family show aur live entertainment broadcast.';
+      nextTitle = '${ch.name} Next Special Episode';
+      nextDesc = 'Agle slot mein dekhein naya drama, twist aur special episode presentation.';
+    }
+
+    return _ChannelEpg(
+      live: _StbProgram(
+        title: liveTitle,
+        timeLabel: '$day : ${_fmtTime(liveStart)} - ${_fmtTime(liveEnd)}',
+        description: liveDesc,
+        posterUrl: ch.logo,
+        progress: progress,
+      ),
+      next: _StbProgram(
+        title: nextTitle,
+        timeLabel: '$day : ${_fmtTime(liveEnd)} - ${_fmtTime(nextEnd)}',
+        description: nextDesc,
+        posterUrl: ch.logo,
+        progress: 0.0,
+      ),
+    );
+  }
+
+  static Future<_ChannelEpg> fetch(TvChannel ch) async {
+    final cached = _cache[ch.id];
+    if (cached != null) return cached;
+
+    if (ch.id >= 1000000) {
+      return fallbackFor(ch);
+    }
+
+    try {
+      final url = 'https://jiotv.data.cdn.jio.com/apis/v1.3/getepg/get?channel_id=${ch.id}&offset=0';
+      final response = await http
+          .get(Uri.parse(url), headers: _AnasTvHomePageState.headers)
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode != 200 || response.body.trim().isEmpty) {
+        return fallbackFor(ch);
+      }
+      final decoded = jsonDecode(response.body);
+      final List epgList = decoded is Map && decoded['epg'] is List ? decoded['epg'] as List : [];
+      if (epgList.isEmpty) return fallbackFor(ch);
+
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      int currentIdx = -1;
+      for (var i = 0; i < epgList.length; i++) {
+        final row = epgList[i];
+        if (row is! Map) continue;
+        final s = _parseEpochMs(row['startEpoch']);
+        final e = _parseEpochMs(row['endEpoch']);
+        if (s > 0 && e > s && nowMs >= s && nowMs < e) {
+          currentIdx = i;
+          break;
+        }
+      }
+      if (currentIdx < 0) return fallbackFor(ch);
+
+      _StbProgram toProg(Map raw, {bool computeProgress = false}) {
+        final sMs = _parseEpochMs(raw['startEpoch']);
+        final eMs = _parseEpochMs(raw['endEpoch']);
+        final sDt = DateTime.fromMillisecondsSinceEpoch(sMs);
+        final eDt = DateTime.fromMillisecondsSinceEpoch(eMs);
+        final prog = computeProgress && eMs > sMs
+            ? ((nowMs - sMs) / (eMs - sMs)).clamp(0.05, 0.98)
+            : 0.0;
+        final rawPoster = (raw['episodePoster'] ?? '').toString().trim();
+        final posterUrl = rawPoster.isEmpty
+            ? ch.logo
+            : (rawPoster.startsWith('http')
+                ? rawPoster
+                : 'https://jiotv.catchup.cdn.jio.com/dare_images/shows/$rawPoster');
+        final title = (raw['showname'] ?? '${ch.name} Live').toString().trim();
+        final desc = (raw['description'] ?? '${ch.name} live television broadcast.').toString().trim();
+        return _StbProgram(
+          title: title.isEmpty ? '${ch.name} Live' : title,
+          timeLabel: '${_weekdayShort(sDt.weekday)} : ${_fmtTime(sDt)} - ${_fmtTime(eDt)}',
+          description: desc.isEmpty ? '${ch.name} live television broadcast.' : desc,
+          posterUrl: posterUrl,
+          progress: prog,
+        );
+      }
+
+      final liveMap = Map<String, dynamic>.from(epgList[currentIdx] as Map);
+      final liveProg = toProg(liveMap, computeProgress: true);
+      final _StbProgram nextProg;
+      if (currentIdx + 1 < epgList.length && epgList[currentIdx + 1] is Map) {
+        nextProg = toProg(Map<String, dynamic>.from(epgList[currentIdx + 1] as Map));
+      } else {
+        nextProg = fallbackFor(ch).next;
+      }
+
+      final result = _ChannelEpg(live: liveProg, next: nextProg);
+      _cache[ch.id] = result;
+      return result;
+    } catch (_) {
+      return fallbackFor(ch);
+    }
+  }
+
+  static int _parseEpochMs(dynamic val) {
+    final n = int.tryParse(val?.toString() ?? '') ?? 0;
+    if (n <= 0) return 0;
+    return n < 100000000000 ? n * 1000 : n;
+  }
+}
+
 class AnasTvPlayerScreen extends StatefulWidget {
-  final TvChannel channel;
+  final List<TvChannel> channels;
+  final int initialIndex;
   final bool isTv;
 
   const AnasTvPlayerScreen({
     super.key,
-    required this.channel,
+    required this.channels,
+    required this.initialIndex,
     required this.isTv,
   });
 
@@ -1541,28 +1854,60 @@ class AnasTvPlayerScreen extends StatefulWidget {
   State<AnasTvPlayerScreen> createState() => _AnasTvPlayerScreenState();
 }
 
+enum _StbPickerKind { audio, quality, stretch }
+
 class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   final FocusNode _playerFocus = FocusNode();
-  final FocusNode _backFocus = FocusNode(canRequestFocus: false);
+
+  late int _playingIndex;
+  late int _previewIndex;
+  late _ChannelEpg _previewEpg;
+  late _HindiTrendingItem _trendingItem;
 
   ResolvedPlayback? _resolved;
   String? _error;
   bool _loading = true;
+  bool _isPaused = false;
   bool _isExiting = false;
+  bool _bannerVisible = true;
+  bool _showNextProgram = false;
+  bool _optionsMode = false;
+  int _selectedOptionIdx = 0;
+
+  _StbPickerKind? _openPicker;
+  List<Map<String, dynamic>> _pickerItems = [];
+  int _pickerFocusedIdx = 0;
+  bool _pickerLoading = false;
+
+  String _resizeMode = 'fill';
+  String _selectedAudioLabel = 'Default';
+  String _selectedQualityLabel = 'Auto (Best)';
+
   MethodChannel? _channel;
   Timer? _watchdog;
+  Timer? _bannerAutoHideTimer;
+  Timer? _clockTimer;
+  DateTime _now = DateTime.now();
+  int _playRequestSeq = 0;
+
+  TvChannel get _playingChannel => widget.channels[_playingIndex];
+  TvChannel get _previewChannel => widget.channels[_previewIndex];
 
   @override
   void initState() {
     super.initState();
-    _resolveAndStart();
-    _watchdog = Timer(const Duration(seconds: 25), () {
-      if (!mounted || !_loading) return;
-      setState(() {
-        _loading = false;
-        _error = 'Playback timeout (25s). Stream respond nahi kar rahi.';
-      });
+    _playingIndex = widget.initialIndex.clamp(0, widget.channels.length - 1);
+    _previewIndex = _playingIndex;
+    _previewEpg = _EpgService.fallbackFor(_previewChannel);
+    _trendingItem = _EpgService.pickRandomTrending();
+
+    _clockTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (mounted) setState(() => _now = DateTime.now());
     });
+
+    _loadPreviewEpg(_previewChannel);
+    _startChannelStream(_playingIndex);
+    _scheduleBannerAutoHide();
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
@@ -1580,9 +1925,10 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   @override
   void dispose() {
     _watchdog?.cancel();
+    _bannerAutoHideTimer?.cancel();
+    _clockTimer?.cancel();
     _channel?.setMethodCallHandler(null);
     _playerFocus.dispose();
-    _backFocus.dispose();
     if (!widget.isTv) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       SystemChrome.setPreferredOrientations(const [DeviceOrientation.portraitUp]);
@@ -1590,18 +1936,77 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     super.dispose();
   }
 
-  Future<void> _resolveAndStart() async {
+  void _scheduleBannerAutoHide() {
+    _bannerAutoHideTimer?.cancel();
+    if (_openPicker != null || _error != null) return;
+    _bannerAutoHideTimer = Timer(const Duration(seconds: 8), () {
+      if (!mounted || _openPicker != null || _error != null) return;
+      setState(() {
+        _bannerVisible = false;
+        _optionsMode = false;
+        _showNextProgram = false;
+        _previewIndex = _playingIndex;
+        _loadPreviewEpg(_playingChannel);
+      });
+    });
+  }
+
+  void _showBanner({bool resetToPlaying = false, bool openOptions = false}) {
     setState(() {
+      if (!_bannerVisible || resetToPlaying) {
+        _trendingItem = _EpgService.pickRandomTrending(_trendingItem);
+      }
+      if (resetToPlaying) {
+        _previewIndex = _playingIndex;
+        _loadPreviewEpg(_playingChannel);
+      }
+      _bannerVisible = true;
+      _optionsMode = openOptions;
+      if (openOptions) _selectedOptionIdx = _selectedOptionIdx.clamp(0, 3);
+    });
+    _scheduleBannerAutoHide();
+  }
+
+  Future<void> _loadPreviewEpg(TvChannel target) async {
+    setState(() => _previewEpg = _EpgService.fallbackFor(target));
+    final fetched = await _EpgService.fetch(target);
+    if (!mounted || _previewChannel.id != target.id) return;
+    setState(() => _previewEpg = fetched);
+  }
+
+  Future<void> _startChannelStream(int targetIndex) async {
+    final reqId = ++_playRequestSeq;
+    final target = widget.channels[targetIndex];
+
+    _watchdog?.cancel();
+    setState(() {
+      _playingIndex = targetIndex;
+      _previewIndex = targetIndex;
       _loading = true;
       _error = null;
+      _isPaused = false;
+      _optionsMode = false;
+      _openPicker = null;
+      _selectedAudioLabel = 'Default';
+      _selectedQualityLabel = 'Auto (Best)';
     });
+    _loadPreviewEpg(target);
+
+    _watchdog = Timer(const Duration(seconds: 25), () {
+      if (!mounted || reqId != _playRequestSeq || !_loading) return;
+      setState(() {
+        _loading = false;
+        _error = 'Playback timeout (25s). Stream respond nahi kar rahi.';
+      });
+    });
+
     try {
-      final resolved = await StreamResolver.resolve(widget.channel);
-      if (!mounted) return;
+      final resolved = await StreamResolver.resolve(target);
+      if (!mounted || reqId != _playRequestSeq) return;
       _resolved = resolved;
       _sendPlayIfReady();
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || reqId != _playRequestSeq) return;
       _watchdog?.cancel();
       setState(() {
         _loading = false;
@@ -1620,7 +2025,10 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       if (call.method == 'onStateChanged') {
         final state = (call.arguments ?? 'unknown').toString();
         setState(() => _loading = state == 'idle' || state == 'buffering');
-        if (state == 'ready' || state == 'ended') _watchdog?.cancel();
+        if (state == 'ready' || state == 'ended') {
+          _watchdog?.cancel();
+          _channel?.invokeMethod('setResizeMode', _resizeMode);
+        }
       } else if (call.method == 'onError') {
         _watchdog?.cancel();
         setState(() {
@@ -1630,6 +2038,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       }
     });
 
+    ch.invokeMethod('setResizeMode', _resizeMode);
     _sendPlayIfReady();
   }
 
@@ -1653,10 +2062,134 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     });
   }
 
+  void _stepPreviewChannel(int delta) {
+    if (widget.channels.isEmpty) return;
+    final nextIdx = (_previewIndex + delta + widget.channels.length) % widget.channels.length;
+    setState(() {
+      _bannerVisible = true;
+      _optionsMode = false;
+      _previewIndex = nextIdx;
+      _trendingItem = _EpgService.pickRandomTrending(_trendingItem);
+    });
+    _loadPreviewEpg(widget.channels[nextIdx]);
+    _scheduleBannerAutoHide();
+  }
+
+  Future<void> _openTrackPicker(_StbPickerKind kind) async {
+    _bannerAutoHideTimer?.cancel();
+    setState(() {
+      _bannerVisible = true;
+      _optionsMode = true;
+      _openPicker = kind;
+      _pickerLoading = true;
+      _pickerItems = [];
+      _pickerFocusedIdx = 0;
+    });
+
+    List<Map<String, dynamic>> items = [];
+    if (kind == _StbPickerKind.stretch) {
+      items = [
+        {'id': 'fill', 'label': 'Stretched (Full Screen)', 'selected': _resizeMode == 'fill'},
+        {'id': 'fit', 'label': 'Fit (Original Aspect)', 'selected': _resizeMode == 'fit'},
+        {'id': 'zoom', 'label': 'Zoom (Fill & Crop)', 'selected': _resizeMode == 'zoom'},
+      ];
+    } else if (kind == _StbPickerKind.audio) {
+      try {
+        final raw = await _channel?.invokeMethod<List<dynamic>>('getAudioTracks') ?? [];
+        items = raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+      } catch (_) {}
+      if (items.isEmpty) {
+        items = [
+          {'groupIndex': -1, 'trackIndex': -1, 'label': 'Default Stream Audio', 'selected': true},
+        ];
+      }
+    } else if (kind == _StbPickerKind.quality) {
+      try {
+        final raw = await _channel?.invokeMethod<List<dynamic>>('getVideoQualities') ?? [];
+        items = raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+      } catch (_) {}
+      if (items.isEmpty) {
+        items = [
+          {'groupIndex': -1, 'trackIndex': -1, 'label': 'Auto (Best)', 'selected': true},
+        ];
+      }
+    }
+
+    if (!mounted || _openPicker != kind) return;
+    final selectedIdx = items.indexWhere((e) => e['selected'] == true);
+    setState(() {
+      _pickerItems = items;
+      _pickerFocusedIdx = selectedIdx >= 0 ? selectedIdx : 0;
+      _pickerLoading = false;
+    });
+  }
+
+  Future<void> _applyPickerSelection(int idx) async {
+    if (idx < 0 || idx >= _pickerItems.length || _openPicker == null) return;
+    final kind = _openPicker!;
+    final item = _pickerItems[idx];
+
+    if (kind == _StbPickerKind.stretch) {
+      final mode = (item['id'] ?? 'fill').toString();
+      await _channel?.invokeMethod('setResizeMode', mode);
+      if (!mounted) return;
+      setState(() {
+        _resizeMode = mode;
+        _openPicker = null;
+      });
+    } else if (kind == _StbPickerKind.audio) {
+      final g = (item['groupIndex'] as num?)?.toInt() ?? -1;
+      final t = (item['trackIndex'] as num?)?.toInt() ?? -1;
+      await _channel?.invokeMethod('setAudioTrack', {'groupIndex': g, 'trackIndex': t});
+      if (!mounted) return;
+      setState(() {
+        _selectedAudioLabel = (item['label'] ?? 'Audio').toString();
+        _openPicker = null;
+      });
+    } else if (kind == _StbPickerKind.quality) {
+      final g = (item['groupIndex'] as num?)?.toInt() ?? -1;
+      final t = (item['trackIndex'] as num?)?.toInt() ?? -1;
+      await _channel?.invokeMethod('setVideoQuality', {'groupIndex': g, 'trackIndex': t});
+      if (!mounted) return;
+      setState(() {
+        _selectedQualityLabel = (item['label'] ?? 'Auto').toString();
+        _openPicker = null;
+      });
+    }
+    _scheduleBannerAutoHide();
+  }
+
+  Future<void> _togglePlayPause() async {
+    final nextPaused = !_isPaused;
+    await _channel?.invokeMethod(nextPaused ? 'pause' : 'resume');
+    if (!mounted) return;
+    setState(() => _isPaused = nextPaused);
+    _scheduleBannerAutoHide();
+  }
+
+  void _triggerOption(int optionIdx) {
+    setState(() => _selectedOptionIdx = optionIdx);
+    switch (optionIdx) {
+      case 0:
+        _openTrackPicker(_StbPickerKind.audio);
+        break;
+      case 1:
+        _openTrackPicker(_StbPickerKind.quality);
+        break;
+      case 2:
+        _openTrackPicker(_StbPickerKind.stretch);
+        break;
+      case 3:
+        _togglePlayPause();
+        break;
+    }
+  }
+
   Future<void> _exitPlayer() async {
     if (_isExiting) return;
     _isExiting = true;
     _watchdog?.cancel();
+    _bannerAutoHideTimer?.cancel();
     if (!widget.isTv) {
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       await SystemChrome.setPreferredOrientations(const [DeviceOrientation.portraitUp]);
@@ -1667,55 +2200,213 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   }
 
   Future<void> _handleBack() async {
-    if (widget.isTv) {
-      final visible = await _channel?.invokeMethod<bool>('isControllerVisible') ?? false;
-      if (visible) {
-        await _channel?.invokeMethod('hideController');
-        if (mounted) _playerFocus.requestFocus();
-        return;
-      }
+    if (_openPicker != null) {
+      setState(() => _openPicker = null);
+      _scheduleBannerAutoHide();
+      return;
+    }
+    if (_optionsMode) {
+      setState(() => _optionsMode = false);
+      _scheduleBannerAutoHide();
+      return;
+    }
+    if (_bannerVisible && _error == null) {
+      setState(() {
+        _bannerVisible = false;
+        _showNextProgram = false;
+        _previewIndex = _playingIndex;
+        _loadPreviewEpg(_playingChannel);
+      });
+      _bannerAutoHideTimer?.cancel();
+      return;
     }
     await _exitPlayer();
   }
 
+  bool _isMenuKey(LogicalKeyboardKey key) =>
+      key == LogicalKeyboardKey.contextMenu ||
+      key == LogicalKeyboardKey.info ||
+      key == LogicalKeyboardKey.guide ||
+      key == LogicalKeyboardKey.f1 ||
+      key == LogicalKeyboardKey.keyM ||
+      key == LogicalKeyboardKey.appSwitch;
+
   KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
-    if (!widget.isTv || event is! KeyDownEvent) return KeyEventResult.ignored;
+    if (!widget.isTv) return KeyEventResult.ignored;
     final key = event.logicalKey;
 
-    if (key == LogicalKeyboardKey.escape) {
-      _handleBack();
+    if (event is KeyRepeatEvent &&
+        (key == LogicalKeyboardKey.select ||
+            key == LogicalKeyboardKey.enter ||
+            key == LogicalKeyboardKey.numpadEnter)) {
+      _showBanner(openOptions: true);
       return KeyEventResult.handled;
     }
 
-    int? androidKeyCode;
-    if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter) {
-      androidKeyCode = 23; // KEYCODE_DPAD_CENTER
-    } else if (key == LogicalKeyboardKey.arrowUp) {
-      androidKeyCode = 19; // KEYCODE_DPAD_UP
-    } else if (key == LogicalKeyboardKey.arrowDown) {
-      androidKeyCode = 20; // KEYCODE_DPAD_DOWN
-    } else if (key == LogicalKeyboardKey.arrowLeft) {
-      androidKeyCode = 21; // KEYCODE_DPAD_LEFT
-    } else if (key == LogicalKeyboardKey.arrowRight) {
-      androidKeyCode = 22; // KEYCODE_DPAD_RIGHT
-    } else if (key == LogicalKeyboardKey.mediaPlayPause || key == LogicalKeyboardKey.space) {
-      androidKeyCode = 85; // KEYCODE_MEDIA_PLAY_PAUSE
-    } else if (key == LogicalKeyboardKey.mediaFastForward) {
-      androidKeyCode = 90;
-    } else if (key == LogicalKeyboardKey.mediaRewind) {
-      androidKeyCode = 89;
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
     }
 
-    if (androidKeyCode != null) {
-      _channel?.invokeMethod('dispatchKey', androidKeyCode);
+    if (key == LogicalKeyboardKey.escape) {
+      if (event is KeyDownEvent) _handleBack();
+      return KeyEventResult.handled;
+    }
+
+    if (_openPicker != null) {
+      if (key == LogicalKeyboardKey.arrowUp && _pickerItems.isNotEmpty) {
+        setState(() {
+          _pickerFocusedIdx = (_pickerFocusedIdx - 1 + _pickerItems.length) % _pickerItems.length;
+        });
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowDown && _pickerItems.isNotEmpty) {
+        setState(() {
+          _pickerFocusedIdx = (_pickerFocusedIdx + 1) % _pickerItems.length;
+        });
+        return KeyEventResult.handled;
+      }
+      if ((key == LogicalKeyboardKey.select ||
+              key == LogicalKeyboardKey.enter ||
+              key == LogicalKeyboardKey.numpadEnter) &&
+          event is KeyDownEvent) {
+        _applyPickerSelection(_pickerFocusedIdx);
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
+
+    if (_isMenuKey(key) && event is KeyDownEvent) {
+      if (_bannerVisible && _optionsMode) {
+        setState(() => _optionsMode = false);
+        _scheduleBannerAutoHide();
+      } else {
+        _showBanner(openOptions: true);
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.mediaPlayPause || key == LogicalKeyboardKey.space) {
+      if (event is KeyDownEvent) {
+        _togglePlayPause();
+        _showBanner();
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.channelUp) {
+      _stepPreviewChannel(1);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.channelDown) {
+      _stepPreviewChannel(-1);
+      return KeyEventResult.handled;
+    }
+
+    if (_optionsMode) {
+      if (key == LogicalKeyboardKey.arrowLeft) {
+        setState(() => _selectedOptionIdx = (_selectedOptionIdx - 1 + 4) % 4);
+        _scheduleBannerAutoHide();
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowRight) {
+        setState(() => _selectedOptionIdx = (_selectedOptionIdx + 1) % 4);
+        _scheduleBannerAutoHide();
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowUp) {
+        setState(() => _optionsMode = false);
+        _scheduleBannerAutoHide();
+        return KeyEventResult.handled;
+      }
+      if ((key == LogicalKeyboardKey.select ||
+              key == LogicalKeyboardKey.enter ||
+              key == LogicalKeyboardKey.numpadEnter) &&
+          event is KeyDownEvent) {
+        _triggerOption(_selectedOptionIdx);
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      _stepPreviewChannel(-1);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowRight) {
+      _stepPreviewChannel(1);
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowUp) {
+      if (!_bannerVisible) {
+        _showBanner(resetToPlaying: true);
+      }
+      setState(() => _showNextProgram = false);
+      _scheduleBannerAutoHide();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown) {
+      if (!_bannerVisible) {
+        _showBanner(resetToPlaying: true);
+      }
+      setState(() => _showNextProgram = true);
+      _scheduleBannerAutoHide();
+      return KeyEventResult.handled;
+    }
+
+    if ((key == LogicalKeyboardKey.select ||
+            key == LogicalKeyboardKey.enter ||
+            key == LogicalKeyboardKey.numpadEnter) &&
+        event is KeyDownEvent) {
+      if (_error != null) {
+        _startChannelStream(_previewIndex);
+        return KeyEventResult.handled;
+      }
+      if (!_bannerVisible) {
+        _showBanner(resetToPlaying: true);
+      } else if (_previewIndex != _playingIndex) {
+        _startChannelStream(_previewIndex);
+        _scheduleBannerAutoHide();
+      } else {
+        _showBanner(openOptions: true);
+      }
       return KeyEventResult.handled;
     }
 
     return KeyEventResult.ignored;
   }
 
+  String _clockHeaderText() {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final h24 = _now.hour;
+    final h12 = h24 % 12 == 0 ? 12 : h24 % 12;
+    final min = _now.minute.toString().padLeft(2, '0');
+    final ampm = h24 >= 12 ? 'pm' : 'am';
+    return '$h12:$min $ampm | ${months[_now.month - 1]} ${_now.day}';
+  }
+
+  String _resizeModeShort() {
+    switch (_resizeMode) {
+      case 'fit':
+        return 'Fit';
+      case 'zoom':
+        return 'Zoom';
+      default:
+        return 'Stretched';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final previewCh = _previewChannel;
+    final isPreviewDifferent = _previewIndex != _playingIndex;
+    final activeProgram = _showNextProgram ? _previewEpg.next : _previewEpg.live;
+    final screenW = MediaQuery.sizeOf(context).width;
+    final compactLayout = screenW < 720;
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
@@ -1729,83 +2420,801 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
           focusNode: _playerFocus,
           autofocus: widget.isTv,
           onKeyEvent: widget.isTv ? _onKeyEvent : null,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              PlatformViewLink(
-                key: ValueKey(widget.channel.id),
-                viewType: 'anas_tv/media3_player',
-                surfaceFactory: (context, controller) => AndroidViewSurface(
-                  controller: controller as AndroidViewController,
-                  gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
-                  hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {
+              if (_openPicker != null) {
+                setState(() => _openPicker = null);
+                _scheduleBannerAutoHide();
+              } else if (_bannerVisible) {
+                setState(() {
+                  _bannerVisible = false;
+                  _optionsMode = false;
+                });
+                _bannerAutoHideTimer?.cancel();
+              } else {
+                _showBanner(resetToPlaying: true);
+              }
+            },
+            onLongPress: () => _showBanner(openOptions: true),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                PlatformViewLink(
+                  viewType: 'anas_tv/media3_player',
+                  surfaceFactory: (context, controller) => AndroidViewSurface(
+                    controller: controller as AndroidViewController,
+                    gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+                    hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+                  ),
+                  onCreatePlatformView: (params) {
+                    return PlatformViewsService.initExpensiveAndroidView(
+                      id: params.id,
+                      viewType: 'anas_tv/media3_player',
+                      layoutDirection: TextDirection.ltr,
+                      creationParams: const <String, dynamic>{},
+                      creationParamsCodec: const StandardMessageCodec(),
+                      onFocus: () => params.onFocusChanged(true),
+                    )
+                      ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
+                      ..addOnPlatformViewCreatedListener(_created)
+                      ..create();
+                  },
                 ),
-                onCreatePlatformView: (params) {
-                  return PlatformViewsService.initExpensiveAndroidView(
-                    id: params.id,
-                    viewType: 'anas_tv/media3_player',
-                    layoutDirection: TextDirection.ltr,
-                    creationParams: const <String, dynamic>{},
-                    creationParamsCodec: const StandardMessageCodec(),
-                    onFocus: () => params.onFocusChanged(true),
-                  )
-                    ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
-                    ..addOnPlatformViewCreatedListener(_created)
-                    ..create();
-                },
-              ),
-              if (_loading) const Center(child: _BrandCircularLoader(size: 84)),
-              if (_error != null)
-                Center(
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.error_outline, color: Colors.orange, size: 38),
-                        const SizedBox(height: 12),
-                        SelectableText(
-                          _error!,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                        const SizedBox(height: 16),
-                        TextButton(
-                          onPressed: _exitPlayer,
-                          child: const Text('Back to channels'),
-                        ),
-                      ],
+                if (_loading) const Center(child: _BrandCircularLoader(size: 84)),
+                if (_error != null)
+                  Center(
+                    child: Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 24),
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: const Color(0xE6101218),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: const Color(0x40FFFFFF)),
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.error_outline, color: Color(0xFFE65312), size: 38),
+                          const SizedBox(height: 10),
+                          SelectableText(
+                            _error!,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Colors.white, fontSize: 13),
+                          ),
+                          const SizedBox(height: 14),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              FilledButton(
+                                style: FilledButton.styleFrom(backgroundColor: const Color(0xFFE65312)),
+                                onPressed: () => _startChannelStream(_previewIndex),
+                                child: const Text('Retry'),
+                              ),
+                              const SizedBox(width: 12),
+                              TextButton(
+                                onPressed: _exitPlayer,
+                                child: const Text('Back to channels'),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-              SafeArea(
-                child: Align(
-                  alignment: Alignment.topLeft,
-                  child: Row(
-                    children: [
-                      IconButton(
-                        focusNode: _backFocus,
-                        onPressed: _exitPlayer,
-                        icon: const Icon(Icons.arrow_back, color: Colors.white),
+                if (_bannerVisible)
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: Container(
+                      padding: EdgeInsets.fromLTRB(
+                        compactLayout ? 14 : 24,
+                        compactLayout ? 10 : 14,
+                        compactLayout ? 14 : 24,
+                        18,
                       ),
-                      Expanded(
-                        child: Text(
-                          widget.channel.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [Color(0xBF000000), Colors.transparent],
+                        ),
+                      ),
+                      child: SafeArea(
+                        bottom: false,
+                        child: Row(
+                          children: [
+                            if (!widget.isTv) ...[
+                              InkWell(
+                                borderRadius: BorderRadius.circular(20),
+                                onTap: _exitPlayer,
+                                child: Container(
+                                  padding: const EdgeInsets.all(6),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: 0.45),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(Icons.arrow_back, color: Colors.white, size: 20),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                            ],
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.45),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                _clockHeaderText(),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
+                            ),
+                            const Spacer(),
+                            if (_isPaused)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFE65312),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Text(
+                                  'PAUSED',
+                                  style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                if (_bannerVisible)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: GestureDetector(
+                      onTap: _scheduleBannerAutoHide,
+                      child: Container(
+                        padding: EdgeInsets.fromLTRB(
+                          compactLayout ? 12 : 22,
+                          14,
+                          compactLayout ? 12 : 22,
+                          compactLayout ? 10 : 14,
+                        ),
+                        decoration: const BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Color(0x00090B10),
+                              Color(0xD60C0E14),
+                              Color(0xF208090D),
+                            ],
+                            stops: [0.0, 0.18, 1.0],
+                          ),
+                        ),
+                        child: SafeArea(
+                          top: false,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Row(
+                                children: [
+                                  InkWell(
+                                    onTap: () => _stepPreviewChannel(-1),
+                                    borderRadius: BorderRadius.circular(14),
+                                    child: const Padding(
+                                      padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                      child: Icon(Icons.chevron_left_rounded, color: Colors.white, size: 22),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    '${_previewIndex + 101}',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Flexible(
+                                    child: Text(
+                                      previewCh.name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  InkWell(
+                                    onTap: () => _stepPreviewChannel(1),
+                                    borderRadius: BorderRadius.circular(14),
+                                    child: const Padding(
+                                      padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                      child: Icon(Icons.chevron_right_rounded, color: Colors.white, size: 22),
+                                    ),
+                                  ),
+                                  if (isPreviewDifferent) ...[
+                                    const SizedBox(width: 8),
+                                    InkWell(
+                                      onTap: () => _startChannelStream(_previewIndex),
+                                      borderRadius: BorderRadius.circular(14),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFE65312),
+                                          borderRadius: BorderRadius.circular(14),
+                                        ),
+                                        child: Text(
+                                          widget.isTv ? 'OK to Watch' : 'Watch Channel',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                  const Spacer(),
+                                  if (previewCh.hd) ...[
+                                    _StbBadge(text: 'HD'),
+                                    const SizedBox(width: 6),
+                                  ],
+                                  _StbBadge(text: _resizeModeShort().toUpperCase()),
+                                  const SizedBox(width: 8),
+                                  InkWell(
+                                    onTap: () => _showBanner(openOptions: !_optionsMode),
+                                    borderRadius: BorderRadius.circular(14),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: _optionsMode
+                                            ? const Color(0xFFE65312)
+                                            : Colors.white.withValues(alpha: 0.9),
+                                        borderRadius: BorderRadius.circular(14),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            Icons.tune_rounded,
+                                            size: 13,
+                                            color: _optionsMode ? Colors.white : Colors.black,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            'Options',
+                                            style: TextStyle(
+                                              color: _optionsMode ? Colors.white : Colors.black,
+                                              fontSize: 11.5,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  if (!compactLayout) ...[
+                                    _HindiTrendingCard(
+                                      item: _trendingItem,
+                                      onTap: () {
+                                        setState(() {
+                                          _trendingItem = _EpgService.pickRandomTrending(_trendingItem);
+                                        });
+                                        _scheduleBannerAutoHide();
+                                      },
+                                    ),
+                                    const SizedBox(width: 12),
+                                  ],
+                                  Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      InkWell(
+                                        onTap: () {
+                                          setState(() {
+                                            _optionsMode = false;
+                                            _showNextProgram = false;
+                                          });
+                                          _scheduleBannerAutoHide();
+                                        },
+                                        child: Icon(
+                                          Icons.arrow_drop_up_rounded,
+                                          size: 22,
+                                          color: !_showNextProgram && !_optionsMode
+                                              ? const Color(0xFFE65312)
+                                              : Colors.white54,
+                                        ),
+                                      ),
+                                      InkWell(
+                                        onTap: () {
+                                          setState(() {
+                                            _optionsMode = false;
+                                            _showNextProgram = true;
+                                          });
+                                          _scheduleBannerAutoHide();
+                                        },
+                                        child: Icon(
+                                          Icons.arrow_drop_down_rounded,
+                                          size: 22,
+                                          color: _showNextProgram && !_optionsMode
+                                              ? const Color(0xFFE65312)
+                                              : Colors.white54,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Container(
+                                    width: compactLayout ? 86 : 112,
+                                    height: compactLayout ? 56 : 68,
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(
+                                        color: isPreviewDifferent
+                                            ? const Color(0xFFE65312)
+                                            : Colors.white24,
+                                        width: isPreviewDifferent ? 2 : 1,
+                                      ),
+                                    ),
+                                    clipBehavior: Clip.antiAlias,
+                                    padding: const EdgeInsets.all(6),
+                                    child: _ChannelLogo(
+                                      primaryUrl: previewCh.logo,
+                                      fallbackUrl: previewCh.fallbackLogo,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 14),
+                                  Expanded(
+                                    child: _optionsMode
+                                        ? _buildStbOptionsBar()
+                                        : _buildStbProgramDetails(activeProgram),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(2),
+                                child: LinearProgressIndicator(
+                                  minHeight: 3,
+                                  value: _showNextProgram ? 0.0 : _previewEpg.live.progress,
+                                  backgroundColor: Colors.white24,
+                                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFE53935)),
+                                ),
+                              ),
+                              if (!_optionsMode) ...[
+                                const SizedBox(height: 6),
+                                Row(
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: _showNextProgram
+                                            ? const Color(0xFF2B303B)
+                                            : const Color(0xFFE65312),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        _showNextProgram ? 'NOW' : 'NEXT',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 9.5,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        _showNextProgram
+                                            ? '${_previewEpg.live.title}  (${_previewEpg.live.timeLabel})'
+                                            : '${_previewEpg.next.title}  (${_previewEpg.next.timeLabel})',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ),
+                                    if (compactLayout) ...[
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: _trendingItem.accent.withValues(alpha: 0.85),
+                                          borderRadius: BorderRadius.circular(4),
+                                        ),
+                                        child: Text(
+                                          _trendingItem.title,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ],
+                            ],
                           ),
                         ),
                       ),
-                    ],
+                    ),
                   ),
+                if (_openPicker != null) _buildStbTrackPickerOverlay(),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStbProgramDetails(_StbProgram program) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: _showNextProgram ? const Color(0xFF1E88E5) : const Color(0xFFE53935),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                _showNextProgram ? 'UP NEXT' : 'LIVE',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.w800,
                 ),
               ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                program.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 3),
+        Text(
+          program.timeLabel,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: Color(0xFFD5D8E0),
+            fontSize: 11.5,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 3),
+        Text(
+          program.description,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: Color(0xFFB6BAC4),
+            fontSize: 11.5,
+            height: 1.25,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStbOptionsBar() {
+    final options = [
+      (Icons.audiotrack_rounded, 'Audio', _selectedAudioLabel),
+      (Icons.hd_rounded, 'Quality', _selectedQualityLabel),
+      (Icons.aspect_ratio_rounded, 'Stretch', _resizeModeShort()),
+      (_isPaused ? Icons.play_arrow_rounded : Icons.pause_rounded, _isPaused ? 'Play' : 'Pause', _isPaused ? 'Resume' : 'Pause'),
+    ];
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: List.generate(options.length, (i) {
+        final selected = _selectedOptionIdx == i;
+        final item = options[i];
+        return Padding(
+          padding: const EdgeInsets.only(right: 18),
+          child: InkWell(
+            onTap: () => _triggerOption(i),
+            borderRadius: BorderRadius.circular(28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 110),
+                  width: selected ? 44 : 38,
+                  height: selected ? 44 : 38,
+                  decoration: BoxDecoration(
+                    color: selected ? const Color(0xFFE65312) : const Color(0xCC222630),
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: selected ? Colors.white : Colors.white24,
+                      width: selected ? 1.8 : 1,
+                    ),
+                  ),
+                  child: Icon(
+                    item.$1,
+                    color: Colors.white,
+                    size: selected ? 22 : 19,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  item.$2,
+                  style: TextStyle(
+                    color: selected ? Colors.white : const Color(0xFFBFC4CF),
+                    fontSize: 11.5,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  ),
+                ),
+                Text(
+                  item.$3,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: selected ? const Color(0xFFFFB74D) : Colors.white54,
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }),
+      ),
+    );
+  }
+
+  Widget _buildStbTrackPickerOverlay() {
+    final kind = _openPicker!;
+    final title = kind == _StbPickerKind.audio
+        ? 'Audio Track'
+        : kind == _StbPickerKind.quality
+            ? 'Video Quality'
+            : 'Screen Stretch Mode';
+
+    return Container(
+      color: Colors.black.withValues(alpha: 0.45),
+      alignment: Alignment.center,
+      child: GestureDetector(
+        onTap: () {},
+        child: Container(
+          width: 340,
+          constraints: const BoxConstraints(maxHeight: 320),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xF511141C),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.white24),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const Spacer(),
+                  if (!widget.isTv)
+                    InkWell(
+                      onTap: () {
+                        setState(() => _openPicker = null);
+                        _scheduleBannerAutoHide();
+                      },
+                      child: const Icon(Icons.close_rounded, color: Colors.white70, size: 20),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              if (_pickerLoading)
+                const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Center(
+                    child: CircularProgressIndicator(color: Color(0xFFE65312), strokeWidth: 2.5),
+                  ),
+                )
+              else
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: _pickerItems.length,
+                    itemBuilder: (context, idx) {
+                      final item = _pickerItems[idx];
+                      final focused = idx == _pickerFocusedIdx;
+                      final active = item['selected'] == true;
+                      return InkWell(
+                        onTap: () => _applyPickerSelection(idx),
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(vertical: 3),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: focused
+                                ? const Color(0xFFE65312)
+                                : const Color(0xFF1A1E29),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  (item['label'] ?? '').toString(),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13.5,
+                                    fontWeight: focused || active ? FontWeight.w700 : FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                              if (active)
+                                Icon(
+                                  Icons.check_circle_rounded,
+                                  size: 18,
+                                  color: focused ? Colors.white : const Color(0xFFE65312),
+                                ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StbBadge extends StatelessWidget {
+  final String text;
+  const _StbBadge({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        color: Colors.white12,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: Colors.white24, width: 0.8),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.3,
+        ),
+      ),
+    );
+  }
+}
+
+class _HindiTrendingCard extends StatelessWidget {
+  final _HindiTrendingItem item;
+  final VoidCallback onTap;
+
+  const _HindiTrendingCard({required this.item, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        width: 158,
+        height: 70,
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              item.accent.withValues(alpha: 0.92),
+              const Color(0xFF10131A),
+            ],
+          ),
+          border: Border.all(color: Colors.white24, width: 0.9),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Row(
+              children: [
+                Icon(item.icon, color: Colors.white, size: 12),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    item.badge,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFFFFD54F),
+                      fontSize: 9.5,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            Text(
+              item.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            Text(
+              item.subtitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 9.5,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
         ),
       ),
     );
