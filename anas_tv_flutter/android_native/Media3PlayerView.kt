@@ -19,6 +19,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -165,6 +166,11 @@ private object Media3SharedHelper {
             )
         }
 
+        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+            .setForceHighestSupportedBitrate(true)
+            .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
+            .setMaxVideoBitrate(Int.MAX_VALUE)
+            .build()
         exoPlayer.setMediaItem(itemBuilder.build())
         return exoPlayer
     }
@@ -223,14 +229,55 @@ private object Media3SharedHelper {
         exo.trackSelectionParameters = builder.build()
     }
 
+    fun selectHighestVideoTrack(exo: ExoPlayer?) {
+        if (exo == null) return
+        var bestGroup: androidx.media3.common.Tracks.Group? = null
+        var bestIndex = -1
+        var bestHeight = -1
+        var bestWidth = -1
+        var bestBitrate = -1
+
+        for (group in exo.currentTracks.groups) {
+            if (group.type != C.TRACK_TYPE_VIDEO) continue
+            for (i in 0 until group.length) {
+                if (!group.isTrackSupported(i)) continue
+                val fmt = group.getTrackFormat(i)
+                val h = if (fmt.height > 0) fmt.height else 0
+                val w = if (fmt.width > 0) fmt.width else 0
+                val br = if (fmt.bitrate > 0) fmt.bitrate else 0
+                val isBetter = h > bestHeight ||
+                    (h == bestHeight && w > bestWidth) ||
+                    (h == bestHeight && w == bestWidth && br > bestBitrate)
+                if (isBetter) {
+                    bestGroup = group
+                    bestIndex = i
+                    bestHeight = h
+                    bestWidth = w
+                    bestBitrate = br
+                }
+            }
+        }
+
+        val targetGroup = bestGroup ?: return
+        if (bestIndex < 0) return
+
+        val existing = exo.trackSelectionParameters.overrides[targetGroup.mediaTrackGroup]
+        if (existing != null && existing.trackIndices.size == 1 && existing.trackIndices[0] == bestIndex) {
+            return
+        }
+
+        exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+            .setForceHighestSupportedBitrate(false)
+            .addOverride(TrackSelectionOverride(targetGroup.mediaTrackGroup, bestIndex))
+            .build()
+    }
+
     fun collectVideoQualities(exo: ExoPlayer?): List<Map<String, Any?>> {
         if (exo == null) {
             return listOf(
-                mapOf("groupIndex" to -1, "trackIndex" to -1, "label" to "Auto", "height" to 0, "selected" to true)
+                mapOf("groupIndex" to -1, "trackIndex" to -1, "label" to "Highest (Default)", "height" to 0, "bitrate" to 0, "selected" to true)
             )
-        }
-        val hasExplicitOverride = exo.trackSelectionParameters.overrides.values.any {
-            it.type == C.TRACK_TYPE_VIDEO
         }
         val entries = mutableListOf<Map<String, Any?>>()
         val seenLabels = HashSet<String>()
@@ -257,40 +304,54 @@ private object Media3SharedHelper {
                         "trackIndex" to i,
                         "label" to label,
                         "height" to height,
-                        "selected" to (hasExplicitOverride && group.isTrackSelected(i))
+                        "bitrate" to bitrateKbps,
+                        "selected" to group.isTrackSelected(i)
                     )
                 )
             }
             videoGroupOrdinal++
         }
 
-        val sorted = entries.sortedByDescending { (it["height"] as? Int) ?: 0 }
-        return listOf(
-            mapOf(
-                "groupIndex" to -1,
-                "trackIndex" to -1,
-                "label" to "Auto (Best)",
-                "height" to 99999,
-                "selected" to !hasExplicitOverride
+        if (entries.isEmpty()) {
+            return listOf(
+                mapOf(
+                    "groupIndex" to -1,
+                    "trackIndex" to -1,
+                    "label" to "Highest (Default)",
+                    "height" to 0,
+                    "bitrate" to 0,
+                    "selected" to true
+                )
             )
-        ) + sorted
+        }
+
+        val sorted = entries.sortedWith(
+            compareByDescending<Map<String, Any?>> { (it["height"] as? Int) ?: 0 }
+                .thenByDescending { (it["bitrate"] as? Int) ?: 0 }
+        )
+        if (sorted.none { it["selected"] == true }) {
+            val first = sorted.first().toMutableMap()
+            first["selected"] = true
+            return listOf(first) + sorted.drop(1)
+        }
+        return sorted
     }
 
     fun applyVideoQuality(exo: ExoPlayer?, targetGroupOrdinal: Int, targetTrackIndex: Int) {
         if (exo == null) return
+        if (targetGroupOrdinal < 0 || targetTrackIndex < 0) {
+            selectHighestVideoTrack(exo)
+            return
+        }
         val builder = exo.trackSelectionParameters.buildUpon()
             .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+            .setForceHighestSupportedBitrate(false)
 
-        if (targetGroupOrdinal < 0 || targetTrackIndex < 0) {
-            builder.setForceHighestSupportedBitrate(true)
-        } else {
-            builder.setForceHighestSupportedBitrate(false)
-            val videoGroups = exo.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
-            if (targetGroupOrdinal < videoGroups.size) {
-                val group = videoGroups[targetGroupOrdinal]
-                if (targetTrackIndex < group.length) {
-                    builder.addOverride(TrackSelectionOverride(group.mediaTrackGroup, targetTrackIndex))
-                }
+        val videoGroups = exo.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+        if (targetGroupOrdinal < videoGroups.size) {
+            val group = videoGroups[targetGroupOrdinal]
+            if (targetTrackIndex < group.length) {
+                builder.addOverride(TrackSelectionOverride(group.mediaTrackGroup, targetTrackIndex))
             }
         }
         exo.trackSelectionParameters = builder.build()
@@ -309,6 +370,7 @@ class TextureMedia3Player(
     private var surfaceEntry: TextureRegistry.SurfaceTextureEntry? = null
     private var videoSurface: Surface? = null
     private var player: ExoPlayer? = null
+    private var userSelectedVideoTrack = false
 
     init {
         channel.setMethodCallHandler { call, result ->
@@ -361,6 +423,7 @@ class TextureMedia3Player(
                     val args = call.arguments as? Map<String, Any?> ?: emptyMap()
                     val g = (args["groupIndex"] as? Number)?.toInt() ?: -1
                     val t = (args["trackIndex"] as? Number)?.toInt() ?: -1
+                    userSelectedVideoTrack = g >= 0 && t >= 0
                     Media3SharedHelper.applyVideoQuality(player, g, t)
                     result.success(null)
                 }
@@ -408,12 +471,18 @@ class TextureMedia3Player(
             ensureTexture()
             setKeepScreenOn(true)
             releasePlayerOnly()
+            userSelectedVideoTrack = false
 
             val exoPlayer = Media3SharedHelper.buildExoPlayer(appContext, params, streamUrl)
             player = exoPlayer
             exoPlayer.setVideoSurface(videoSurface)
 
             exoPlayer.addListener(object : Player.Listener {
+                override fun onTracksChanged(tracks: Tracks) {
+                    if (!userSelectedVideoTrack) {
+                        Media3SharedHelper.selectHighestVideoTrack(exoPlayer)
+                    }
+                }
                 override fun onPlayerError(error: PlaybackException) {
                     val causes = generateSequence(error as Throwable?) { it.cause }
                         .take(6)
@@ -488,6 +557,7 @@ class Media3PlayerView(
     private val playerView = PlayerView(appContext)
     private val channel = MethodChannel(messenger, "anas_tv/media3_player_$viewId")
     private var player: ExoPlayer? = null
+    private var userSelectedVideoTrack = false
     private val mainHandler = Handler(Looper.getMainLooper())
 
     init {
@@ -563,6 +633,7 @@ class Media3PlayerView(
                     val args = call.arguments as? Map<String, Any?> ?: emptyMap()
                     val groupIdx = (args["groupIndex"] as? Number)?.toInt() ?: -1
                     val trackIdx = (args["trackIndex"] as? Number)?.toInt() ?: -1
+                    userSelectedVideoTrack = groupIdx >= 0 && trackIdx >= 0
                     Media3SharedHelper.applyVideoQuality(player, groupIdx, trackIdx)
                     result.success(null)
                 }
@@ -581,11 +652,17 @@ class Media3PlayerView(
                 mainHandler.post { prevPlayer.release() }
             }
 
+            userSelectedVideoTrack = false
             val exoPlayer = Media3SharedHelper.buildExoPlayer(context, params, streamUrl)
             player = exoPlayer
             playerView.player = exoPlayer
 
             exoPlayer.addListener(object : Player.Listener {
+                override fun onTracksChanged(tracks: Tracks) {
+                    if (!userSelectedVideoTrack) {
+                        Media3SharedHelper.selectHighestVideoTrack(exoPlayer)
+                    }
+                }
                 override fun onPlayerError(error: PlaybackException) {
                     val causes = generateSequence(error as Throwable?) { it.cause }
                         .take(6)

@@ -224,10 +224,17 @@ Map<String, String> _imageHeadersFor(String url) {
   if (host.contains('jio.com')) {
     return const {'User-Agent': StreamResolver.defaultUa};
   }
+  if (host.contains('wikia.nocookie.net')) {
+    return const {
+      'User-Agent':
+          'Mozilla/5.0 (Linux; Android 13; TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+      'Referer': 'https://logos.fandom.com/',
+    };
+  }
   return const {
-    'User-Agent':
-        'Mozilla/5.0 (Linux; Android 13; TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+    'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 13; Android TV Build/TQ3A.230805.001)',
+    'Accept': '*/*',
   };
 }
 
@@ -1083,9 +1090,11 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
         if (nextLogo.trim().isEmpty && logoDonor != null) {
           nextLogo = logoDonor.logo;
           nextFallback = logoDonor.fallbackLogo.isNotEmpty ? logoDonor.fallbackLogo : logoDonor.logo;
-        } else if (logoDonor != null &&
-            (nextFallback.trim().isEmpty || nextFallback == nextLogo)) {
-          nextFallback = logoDonor.logo;
+        } else if (nextLogo.contains('://www.sonypicturesnetworks.com/')) {
+          nextFallback = nextLogo.replaceFirst(
+            '://www.sonypicturesnetworks.com/',
+            '://sonypicturesnetworks.com/',
+          );
         }
 
         return ch.copyWith(
@@ -3098,7 +3107,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       } catch (_) {}
       if (items.isEmpty) {
         items = [
-          {'groupIndex': -1, 'trackIndex': -1, 'label': 'Auto (Best)', 'selected': true},
+          {'groupIndex': -1, 'trackIndex': -1, 'label': 'Highest (Default)', 'selected': true},
         ];
       }
     }
@@ -4231,7 +4240,6 @@ class _ChannelCardState extends State<_ChannelCard> {
                       height: logoSize,
                       child: Container(
                         decoration: BoxDecoration(
-                          color: Colors.white,
                           shape: BoxShape.circle,
                           border: Border.all(
                             color: showTvFocus ? Colors.white : const Color(0xFFD94B0A),
@@ -4239,10 +4247,10 @@ class _ChannelCardState extends State<_ChannelCard> {
                           ),
                         ),
                         clipBehavior: Clip.antiAlias,
-                        padding: EdgeInsets.all(logoSize * 0.08),
                         child: _ChannelLogo(
                           primaryUrl: widget.channel.logo,
                           fallbackUrl: widget.channel.fallbackLogo,
+                          padding: logoSize * 0.08,
                         ),
                       ),
                     ),
@@ -4388,7 +4396,12 @@ class _ChannelMarqueeState extends State<_ChannelMarquee> with SingleTickerProvi
 
 class _ChannelLogo extends StatefulWidget {
   final String primaryUrl, fallbackUrl;
-  const _ChannelLogo({required this.primaryUrl, required this.fallbackUrl});
+  final double padding;
+  const _ChannelLogo({
+    required this.primaryUrl,
+    required this.fallbackUrl,
+    this.padding = 0,
+  });
   @override
   State<_ChannelLogo> createState() => _ChannelLogoState();
 }
@@ -4415,6 +4428,12 @@ class _ChannelLogoState extends State<_ChannelLogo> {
     }
 
     addUrl(widget.primaryUrl);
+    if (widget.primaryUrl.contains('://www.sonypicturesnetworks.com/')) {
+      addUrl(widget.primaryUrl.replaceFirst(
+        '://www.sonypicturesnetworks.com/',
+        '://sonypicturesnetworks.com/',
+      ));
+    }
     addUrl(widget.fallbackUrl);
     if (widget.fallbackUrl.contains('jiotvimages.cdn.jio.com/')) {
       addUrl(widget.fallbackUrl.replaceFirst(
@@ -4429,26 +4448,35 @@ class _ChannelLogoState extends State<_ChannelLogo> {
   Widget build(BuildContext context) {
     final urls = _candidates;
     if (_attempt >= urls.length) {
-      return const Center(child: Icon(Icons.tv_rounded, size: 28, color: Colors.grey));
+      return Container(
+        color: Colors.white,
+        alignment: Alignment.center,
+        child: const Icon(Icons.tv_rounded, size: 28, color: Colors.grey),
+      );
     }
     final url = urls[_attempt];
-    return CachedNetworkImage(
-      imageUrl: url,
-      httpHeaders: _imageHeadersFor(url),
-      fit: BoxFit.contain,
-      memCacheWidth: 140,
-      memCacheHeight: 140,
-      fadeInDuration: Duration.zero,
-      fadeOutDuration: Duration.zero,
-      useOldImageOnUrlChange: true,
-      errorWidget: (_, __, ___) {
-        if (_attempt + 1 < urls.length) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) setState(() => _attempt++);
-          });
-        }
-        return const Center(child: Icon(Icons.tv_rounded, size: 28, color: Colors.grey));
-      },
+    final needsDarkBg = url.toLowerCase().contains('white');
+    return Container(
+      color: needsDarkBg ? const Color(0xFF151924) : Colors.white,
+      padding: EdgeInsets.all(widget.padding),
+      child: CachedNetworkImage(
+        imageUrl: url,
+        httpHeaders: _imageHeadersFor(url),
+        fit: BoxFit.contain,
+        memCacheWidth: 140,
+        memCacheHeight: 140,
+        fadeInDuration: Duration.zero,
+        fadeOutDuration: Duration.zero,
+        useOldImageOnUrlChange: true,
+        errorWidget: (_, __, ___) {
+          if (_attempt + 1 < urls.length) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) setState(() => _attempt++);
+            });
+          }
+          return const Center(child: Icon(Icons.tv_rounded, size: 28, color: Colors.grey));
+        },
+      ),
     );
   }
 }
