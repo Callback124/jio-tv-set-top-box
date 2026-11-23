@@ -358,7 +358,7 @@ class _BrandCircularLoader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final innerSize = size - 12;
+    final innerSize = size - 14;
     return SizedBox(
       width: size,
       height: size,
@@ -366,19 +366,18 @@ class _BrandCircularLoader extends StatelessWidget {
         alignment: Alignment.center,
         children: [
           Container(
-            width: innerSize,
-            height: innerSize,
+            width: innerSize * 0.86,
+            height: innerSize * 0.86,
             decoration: const BoxDecoration(
               color: Colors.white,
               shape: BoxShape.circle,
             ),
-            clipBehavior: Clip.antiAlias,
-            child: SvgPicture.asset(
-              'assets/images/jio_logo.svg',
-              width: innerSize,
-              height: innerSize,
-              fit: BoxFit.cover,
-            ),
+          ),
+          SvgPicture.asset(
+            'assets/images/jio_logo.svg',
+            width: innerSize,
+            height: innerSize,
+            fit: BoxFit.contain,
           ),
           SizedBox(
             width: size,
@@ -903,6 +902,8 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
                   ),
         ))
         .then((_) {
+          _zeroHoldTimer?.cancel();
+          _openedSearchOnHold = false;
           _searchOpen = false;
           _lastSubScreenReturnAt = DateTime.now();
           if (widget.isTv && mounted) {
@@ -1186,27 +1187,59 @@ class AnasTvSearchScreen extends StatefulWidget {
 
 class _AnasTvSearchScreenState extends State<AnasTvSearchScreen> {
   final TextEditingController _searchController = TextEditingController();
-  final FocusNode _searchFocus = FocusNode();
+  late final FocusNode _searchFocus;
   final ScrollController _gridScroll = ScrollController();
   final Map<int, FocusNode> _cardNodes = {};
 
   String _query = '';
   bool _isExiting = false;
-  bool _searchFocused = false;
+  bool _ignoreInitialZeroKeys = false;
+  late final DateTime _openedAt = DateTime.now();
+  Timer? _zeroGuardTimer;
   double _dragDeltaX = 0;
 
   FocusNode _cardNode(int index) => _cardNodes.putIfAbsent(index, () => FocusNode());
 
+  bool _isZeroKey(KeyEvent event) {
+    final l = event.logicalKey;
+    final p = event.physicalKey;
+    return l == LogicalKeyboardKey.digit0 ||
+        l == LogicalKeyboardKey.numpad0 ||
+        p == PhysicalKeyboardKey.digit0 ||
+        p == PhysicalKeyboardKey.numpad0;
+  }
+
   @override
   void initState() {
     super.initState();
-    _searchFocus.addListener(() {
-      if (mounted) setState(() => _searchFocused = _searchFocus.hasFocus);
-    });
+    _ignoreInitialZeroKeys = widget.isTv;
+    if (widget.isTv) {
+      _zeroGuardTimer = Timer(const Duration(milliseconds: 1200), () {
+        _ignoreInitialZeroKeys = false;
+      });
+    }
+    _searchFocus = FocusNode(
+      onKeyEvent: (node, event) {
+        if (!widget.isTv) return KeyEventResult.ignored;
+        if (_isZeroKey(event) && _ignoreInitialZeroKeys) {
+          if (event is KeyUpEvent) {
+            _ignoreInitialZeroKeys = false;
+            _zeroGuardTimer?.cancel();
+          }
+          return KeyEventResult.handled;
+        }
+        if (_ignoreInitialZeroKeys && event is KeyDownEvent && !_isZeroKey(event)) {
+          _ignoreInitialZeroKeys = false;
+          _zeroGuardTimer?.cancel();
+        }
+        return KeyEventResult.ignored;
+      },
+    );
   }
 
   @override
   void dispose() {
+    _zeroGuardTimer?.cancel();
     _searchController.dispose();
     _searchFocus.dispose();
     _gridScroll.dispose();
@@ -1365,100 +1398,74 @@ class _AnasTvSearchScreenState extends State<AnasTvSearchScreen> {
                       ),
                     ),
                     alignment: Alignment.center,
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(
-                        maxWidth: widget.isTv ? 460 : double.infinity,
-                      ),
-                      child: Padding(
-                        padding: EdgeInsets.symmetric(
-                          horizontal: widget.isTv ? 16 : 12,
-                          vertical: 5,
-                        ),
-                        child: Shortcuts(
-                          shortcuts: widget.isTv
-                              ? const <ShortcutActivator, Intent>{
-                                  SingleActivator(LogicalKeyboardKey.arrowDown):
-                                      _FocusSearchGridIntent(),
-                                }
-                              : const <ShortcutActivator, Intent>{},
-                          child: Actions(
-                            actions: <Type, Action<Intent>>{
-                              _FocusSearchGridIntent: CallbackAction<_FocusSearchGridIntent>(
-                                onInvoke: (_) {
-                                  if (_results.isNotEmpty) _focusCard(0);
-                                  return null;
-                                },
-                              ),
+                    child: Shortcuts(
+                      shortcuts: widget.isTv
+                          ? const <ShortcutActivator, Intent>{
+                              SingleActivator(LogicalKeyboardKey.arrowDown):
+                                  _FocusSearchGridIntent(),
+                            }
+                          : const <ShortcutActivator, Intent>{},
+                      child: Actions(
+                        actions: <Type, Action<Intent>>{
+                          _FocusSearchGridIntent: CallbackAction<_FocusSearchGridIntent>(
+                            onInvoke: (_) {
+                              if (_results.isNotEmpty) _focusCard(0);
+                              return null;
                             },
-                            child: Container(
-                              height: 34,
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF14161D),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                  color: _searchFocused
-                                      ? const Color(0xFFE65312)
-                                      : const Color(0xFF282B36),
-                                  width: 1.1,
-                                ),
-                              ),
-                              padding: const EdgeInsets.symmetric(horizontal: 10),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    Icons.search_rounded,
-                                    size: 18,
-                                    color: _searchFocused
-                                        ? const Color(0xFFE65312)
-                                        : const Color(0xFF9EA4B3),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: TextField(
-                                      controller: _searchController,
-                                      focusNode: _searchFocus,
-                                      autofocus: true,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 13.5,
-                                        fontWeight: FontWeight.w500,
-                                      ),
-                                      cursorColor: const Color(0xFFE65312),
-                                      textInputAction: TextInputAction.search,
-                                      decoration: const InputDecoration(
-                                        hintText: 'Search channels...',
-                                        hintStyle: TextStyle(
-                                          color: Color(0xFF7C8292),
-                                          fontSize: 13,
-                                        ),
-                                        border: InputBorder.none,
-                                        isDense: true,
-                                        contentPadding: EdgeInsets.zero,
-                                      ),
-                                      onChanged: (value) {
-                                        setState(() => _query = value);
-                                        if (_gridScroll.hasClients) _gridScroll.jumpTo(0);
-                                      },
-                                    ),
-                                  ),
-                                  if (_query.isNotEmpty)
-                                    GestureDetector(
-                                      onTap: () {
-                                        _searchController.clear();
-                                        setState(() => _query = '');
-                                      },
-                                      child: const Padding(
-                                        padding: EdgeInsets.only(left: 6),
-                                        child: Icon(
-                                          Icons.close_rounded,
-                                          size: 17,
-                                          color: Color(0xFF9EA4B3),
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
+                          ),
+                        },
+                        child: Padding(
+                          padding: EdgeInsets.fromLTRB(24, widget.isTv ? 4 : 0, 24, 0),
+                          child: TextField(
+                            controller: _searchController,
+                            focusNode: _searchFocus,
+                            autofocus: true,
+                            textAlign: TextAlign.center,
+                            textAlignVertical: TextAlignVertical.center,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 0.3,
                             ),
+                            cursorColor: const Color(0xFFE65312),
+                            textInputAction: TextInputAction.search,
+                            inputFormatters: widget.isTv
+                                ? [
+                                    TextInputFormatter.withFunction((oldValue, newValue) {
+                                      if (_ignoreInitialZeroKeys &&
+                                          DateTime.now().difference(_openedAt) <
+                                              const Duration(milliseconds: 1200) &&
+                                          oldValue.text.isEmpty &&
+                                          RegExp(r'^0+$').hasMatch(newValue.text)) {
+                                        return oldValue;
+                                      }
+                                      if (newValue.text.isNotEmpty &&
+                                          !RegExp(r'^0+$').hasMatch(newValue.text)) {
+                                        _ignoreInitialZeroKeys = false;
+                                      }
+                                      return newValue;
+                                    }),
+                                  ]
+                                : null,
+                            decoration: const InputDecoration(
+                              hintText: 'Search...',
+                              hintStyle: TextStyle(
+                                color: Color(0xFF8B909E),
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              border: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                              enabledBorder: InputBorder.none,
+                              filled: false,
+                              isDense: true,
+                              contentPadding: EdgeInsets.zero,
+                            ),
+                            onChanged: (value) {
+                              setState(() => _query = value);
+                              if (_gridScroll.hasClients) _gridScroll.jumpTo(0);
+                            },
                           ),
                         ),
                       ),
