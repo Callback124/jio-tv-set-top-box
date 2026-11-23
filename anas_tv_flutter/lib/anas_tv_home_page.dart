@@ -4240,6 +4240,7 @@ class _ChannelCardState extends State<_ChannelCard> {
                       height: logoSize,
                       child: Container(
                         decoration: BoxDecoration(
+                          color: const Color(0xFF5CCFE0),
                           shape: BoxShape.circle,
                           border: Border.all(
                             color: showTvFocus ? Colors.white : const Color(0xFFD94B0A),
@@ -4247,10 +4248,10 @@ class _ChannelCardState extends State<_ChannelCard> {
                           ),
                         ),
                         clipBehavior: Clip.antiAlias,
+                        padding: EdgeInsets.all(logoSize * 0.08),
                         child: _ChannelLogo(
                           primaryUrl: widget.channel.logo,
                           fallbackUrl: widget.channel.fallbackLogo,
-                          padding: logoSize * 0.08,
                         ),
                       ),
                     ),
@@ -4396,11 +4397,9 @@ class _ChannelMarqueeState extends State<_ChannelMarquee> with SingleTickerProvi
 
 class _ChannelLogo extends StatefulWidget {
   final String primaryUrl, fallbackUrl;
-  final double padding;
   const _ChannelLogo({
     required this.primaryUrl,
     required this.fallbackUrl,
-    this.padding = 0,
   });
   @override
   State<_ChannelLogo> createState() => _ChannelLogoState();
@@ -4448,35 +4447,26 @@ class _ChannelLogoState extends State<_ChannelLogo> {
   Widget build(BuildContext context) {
     final urls = _candidates;
     if (_attempt >= urls.length) {
-      return Container(
-        color: Colors.white,
-        alignment: Alignment.center,
-        child: const Icon(Icons.tv_rounded, size: 28, color: Colors.grey),
-      );
+      return const Center(child: Icon(Icons.tv_rounded, size: 28, color: Color(0xFF163842)));
     }
     final url = urls[_attempt];
-    final needsDarkBg = url.toLowerCase().contains('white');
-    return Container(
-      color: needsDarkBg ? const Color(0xFF151924) : Colors.white,
-      padding: EdgeInsets.all(widget.padding),
-      child: CachedNetworkImage(
-        imageUrl: url,
-        httpHeaders: _imageHeadersFor(url),
-        fit: BoxFit.contain,
-        memCacheWidth: 140,
-        memCacheHeight: 140,
-        fadeInDuration: Duration.zero,
-        fadeOutDuration: Duration.zero,
-        useOldImageOnUrlChange: true,
-        errorWidget: (_, __, ___) {
-          if (_attempt + 1 < urls.length) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) setState(() => _attempt++);
-            });
-          }
-          return const Center(child: Icon(Icons.tv_rounded, size: 28, color: Colors.grey));
-        },
-      ),
+    return CachedNetworkImage(
+      imageUrl: url,
+      httpHeaders: _imageHeadersFor(url),
+      fit: BoxFit.contain,
+      memCacheWidth: 140,
+      memCacheHeight: 140,
+      fadeInDuration: Duration.zero,
+      fadeOutDuration: Duration.zero,
+      useOldImageOnUrlChange: true,
+      errorWidget: (_, __, ___) {
+        if (_attempt + 1 < urls.length) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) setState(() => _attempt++);
+          });
+        }
+        return const Center(child: Icon(Icons.tv_rounded, size: 28, color: Color(0xFF163842)));
+      },
     );
   }
 }
