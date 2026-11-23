@@ -3473,35 +3473,21 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                           ),
                         )
                       : (_textureId != null
-                          ? RepaintBoundary(
-                              child: _resizeMode == 'fill'
-                                  ? SizedBox.expand(
-                                      child: Texture(textureId: _textureId!),
-                                    )
-                                  : SizedBox.expand(
-                                      child: ClipRect(
-                                        clipBehavior: _resizeMode == 'zoom'
-                                            ? Clip.hardEdge
-                                            : Clip.none,
-                                        child: FittedBox(
-                                          fit: _videoBoxFit,
-                                          child: SizedBox(
-                                            width: _videoWidth,
-                                            height: _videoHeight,
-                                            child: Texture(textureId: _textureId!),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
+                          ? SizedBox.expand(
+                              child: ClipRect(
+                                child: FittedBox(
+                                  fit: _videoBoxFit,
+                                  child: SizedBox(
+                                    width: _videoWidth,
+                                    height: _videoHeight,
+                                    child: Texture(textureId: _textureId!),
+                                  ),
+                                ),
+                              ),
                             )
                           : const ColoredBox(color: Colors.black)),
                 ),
-                if (_loading)
-                  const Center(
-                    child: RepaintBoundary(
-                      child: _BrandCircularLoader(size: 84),
-                    ),
-                  ),
+                if (_loading) const Center(child: _BrandCircularLoader(size: 84)),
                 if (_error != null)
                   Center(
                     child: Container(
@@ -3547,15 +3533,14 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                     top: 0,
                     left: 0,
                     right: 0,
-                    child: RepaintBoundary(
-                      child: Container(
-                        padding: EdgeInsets.fromLTRB(
-                          compactLayout ? 14 : 26,
-                          compactLayout ? 10 : 14,
-                          compactLayout ? 14 : 26,
-                          12,
-                        ),
-                        color: Colors.transparent,
+                    child: Container(
+                      padding: EdgeInsets.fromLTRB(
+                        compactLayout ? 14 : 26,
+                        compactLayout ? 10 : 14,
+                        compactLayout ? 14 : 26,
+                        12,
+                      ),
+                      color: Colors.transparent,
                       child: SafeArea(
                         bottom: false,
                         child: Row(
@@ -3587,7 +3572,6 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                           ],
                         ),
                       ),
-                    ),
                     ),
                   ),
                 if (_bannerVisible)

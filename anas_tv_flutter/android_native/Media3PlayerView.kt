@@ -30,7 +30,6 @@ import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
 import androidx.media3.exoplayer.drm.FrameworkMediaDrm
 import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import io.flutter.plugin.common.BinaryMessenger
@@ -96,12 +95,7 @@ private object Media3SharedHelper {
     }
 
     @OptIn(UnstableApi::class)
-    fun buildExoPlayer(
-        context: Context,
-        params: Map<String, Any?>,
-        streamUrl: String,
-        enableTunneling: Boolean = false
-    ): ExoPlayer {
+    fun buildExoPlayer(context: Context, params: Map<String, Any?>, streamUrl: String): ExoPlayer {
         val rawHeaders = (params["headers"] as? Map<*, *>).orEmpty()
         val cleanHeaders = LinkedHashMap<String, String>()
         rawHeaders.forEach { (k, v) ->
@@ -136,31 +130,15 @@ private object Media3SharedHelper {
 
         val renderersFactory = DefaultRenderersFactory(context)
             .setEnableDecoderFallback(true)
-            .forceEnableMediaCodecAsynchronousQueueing()
 
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(12_000, 30_000, 1_000, 2_000)
-            .setPrioritizeTimeOverSizeThresholds(true)
+            .setBufferDurationsMs(10_000, 25_000, 1_200, 2_500)
             .build()
 
-        val trackSelector = DefaultTrackSelector(context).apply {
-            setParameters(
-                buildUponParameters()
-                    .setTunnelingEnabled(enableTunneling)
-                    .setForceHighestSupportedBitrate(true)
-                    .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
-                    .setMaxVideoBitrate(Int.MAX_VALUE)
-                    .build()
-            )
-        }
-
         val exoPlayer = ExoPlayer.Builder(context, renderersFactory)
-            .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
             .setMediaSourceFactory(mediaSourceFactory)
             .build()
-
-        exoPlayer.videoChangeFrameRateStrategy = C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS
 
         val itemBuilder = MediaItem.Builder().setUri(streamUrl)
         val lowerUrl = streamUrl.lowercase(Locale.ROOT)
@@ -188,6 +166,11 @@ private object Media3SharedHelper {
             )
         }
 
+        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+            .setForceHighestSupportedBitrate(true)
+            .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
+            .setMaxVideoBitrate(Int.MAX_VALUE)
+            .build()
         exoPlayer.setMediaItem(itemBuilder.build())
         return exoPlayer
     }
@@ -384,7 +367,8 @@ class TextureMedia3Player(
 ) {
     private val channel = MethodChannel(messenger, "anas_tv/texture_player")
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var surfaceProducer: TextureRegistry.SurfaceProducer? = null
+    private var surfaceEntry: TextureRegistry.SurfaceTextureEntry? = null
+    private var videoSurface: Surface? = null
     private var player: ExoPlayer? = null
     private var userSelectedVideoTrack = false
 
@@ -454,23 +438,12 @@ class TextureMedia3Player(
     }
 
     private fun ensureTexture(): Long {
-        val existing = surfaceProducer
+        val existing = surfaceEntry
         if (existing != null) return existing.id()
-        val producer = textureRegistry.createSurfaceProducer()
-        producer.setCallback(object : TextureRegistry.SurfaceProducer.Callback {
-            override fun onSurfaceAvailable() {
-                val activeSurface: Surface? = surfaceProducer?.surface
-                if (activeSurface != null) {
-                    player?.setVideoSurface(activeSurface)
-                }
-            }
-
-            override fun onSurfaceCleanup() {
-                player?.clearVideoSurface()
-            }
-        })
-        surfaceProducer = producer
-        return producer.id()
+        val entry = textureRegistry.createSurfaceTexture()
+        surfaceEntry = entry
+        videoSurface = Surface(entry.surfaceTexture())
+        return entry.id()
     }
 
     private fun setKeepScreenOn(enabled: Boolean) {
@@ -500,17 +473,9 @@ class TextureMedia3Player(
             releasePlayerOnly()
             userSelectedVideoTrack = false
 
-            val exoPlayer = Media3SharedHelper.buildExoPlayer(
-                appContext,
-                params,
-                streamUrl,
-                enableTunneling = false
-            )
+            val exoPlayer = Media3SharedHelper.buildExoPlayer(appContext, params, streamUrl)
             player = exoPlayer
-            val activeSurface: Surface? = surfaceProducer?.surface
-            if (activeSurface != null) {
-                exoPlayer.setVideoSurface(activeSurface)
-            }
+            exoPlayer.setVideoSurface(videoSurface)
 
             exoPlayer.addListener(object : Player.Listener {
                 override fun onTracksChanged(tracks: Tracks) {
@@ -542,15 +507,10 @@ class TextureMedia3Player(
 
                 override fun onVideoSizeChanged(videoSize: VideoSize) {
                     if (videoSize.width > 0 && videoSize.height > 0) {
-                        val displayW = if (videoSize.pixelWidthHeightRatio > 0f && videoSize.pixelWidthHeightRatio != 1f) {
-                            (videoSize.width * videoSize.pixelWidthHeightRatio).toInt().coerceAtLeast(1)
-                        } else {
-                            videoSize.width
-                        }
                         mainHandler.post {
                             channel.invokeMethod(
                                 "onVideoSizeChanged",
-                                mapOf("width" to displayW, "height" to videoSize.height)
+                                mapOf("width" to videoSize.width, "height" to videoSize.height)
                             )
                         }
                     }
@@ -574,8 +534,10 @@ class TextureMedia3Player(
 
     fun releaseAll() {
         releasePlayerOnly()
-        surfaceProducer?.release()
-        surfaceProducer = null
+        videoSurface?.release()
+        videoSurface = null
+        surfaceEntry?.release()
+        surfaceEntry = null
     }
 
     fun dispose() {
@@ -691,12 +653,7 @@ class Media3PlayerView(
             }
 
             userSelectedVideoTrack = false
-            val exoPlayer = Media3SharedHelper.buildExoPlayer(
-                context,
-                params,
-                streamUrl,
-                enableTunneling = true
-            )
+            val exoPlayer = Media3SharedHelper.buildExoPlayer(context, params, streamUrl)
             player = exoPlayer
             playerView.player = exoPlayer
 

@@ -34,8 +34,6 @@ class MainActivity : FlutterActivity() {
             Media3PlayerFactory(messenger)
         )
 
-        enableHighestRefreshRate()
-
         MethodChannel(messenger, "anas_tv/device").setMethodCallHandler { call, result ->
             when (call.method) {
                 "isTv" -> {
@@ -64,41 +62,6 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
                 else -> result.notImplemented()
-            }
-        }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        enableHighestRefreshRate()
-    }
-
-    private fun enableHighestRefreshRate() {
-        runOnUiThread {
-            val currentDisplay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                display
-            } else {
-                @Suppress("DEPRECATION")
-                windowManager.defaultDisplay
-            } ?: return@runOnUiThread
-
-            val lp = window.attributes
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val activeMode = currentDisplay.mode
-                val bestMode = currentDisplay.supportedModes
-                    .filter {
-                        it.physicalWidth == activeMode.physicalWidth &&
-                            it.physicalHeight == activeMode.physicalHeight
-                    }
-                    .maxByOrNull { it.refreshRate }
-                if (bestMode != null && (lp.preferredDisplayModeId != bestMode.modeId || lp.preferredRefreshRate != bestMode.refreshRate)) {
-                    lp.preferredDisplayModeId = bestMode.modeId
-                    lp.preferredRefreshRate = bestMode.refreshRate
-                    window.attributes = lp
-                }
-            } else if (lp.preferredRefreshRate != currentDisplay.refreshRate) {
-                lp.preferredRefreshRate = currentDisplay.refreshRate
-                window.attributes = lp
             }
         }
     }
