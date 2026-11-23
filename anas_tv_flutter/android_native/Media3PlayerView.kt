@@ -18,6 +18,8 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
 import androidx.media3.exoplayer.drm.FrameworkMediaDrm
@@ -55,6 +57,7 @@ class Media3PlayerView(
         }
 
         playerView.useController = false
+        playerView.setShutterBackgroundColor(Color.BLACK)
         playerView.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
         playerView.isFocusable = false
         playerView.isFocusableInTouchMode = false
@@ -293,16 +296,19 @@ class Media3PlayerView(
                 mediaSourceFactory.setDrmSessionManagerProvider { drmSessionManager }
             }
 
-            val exoPlayer = ExoPlayer.Builder(context)
+            val renderersFactory = DefaultRenderersFactory(context)
+                .setEnableDecoderFallback(true)
+
+            val loadControl = DefaultLoadControl.Builder()
+                .setBufferDurationsMs(10_000, 25_000, 1_200, 2_500)
+                .build()
+
+            val exoPlayer = ExoPlayer.Builder(context, renderersFactory)
+                .setLoadControl(loadControl)
                 .setMediaSourceFactory(mediaSourceFactory)
                 .build()
             player = exoPlayer
             playerView.player = exoPlayer
-
-            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-                .buildUpon()
-                .setForceHighestSupportedBitrate(true)
-                .build()
 
             val itemBuilder = MediaItem.Builder().setUri(streamUrl)
             val lowerUrl = streamUrl.lowercase()

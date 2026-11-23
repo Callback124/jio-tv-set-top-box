@@ -24,8 +24,8 @@ class _AnasTvAppState extends State<AnasTvApp> {
   @override
   void initState() {
     super.initState();
-    PaintingBinding.instance.imageCache.maximumSize = 1500;
-    PaintingBinding.instance.imageCache.maximumSizeBytes = 256 << 20;
+    PaintingBinding.instance.imageCache.maximumSize = 400;
+    PaintingBinding.instance.imageCache.maximumSizeBytes = 64 << 20;
     _detectDeviceMode();
   }
 
@@ -360,35 +360,46 @@ class _BrandCircularLoader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final innerSize = size - 14;
-    return SizedBox(
-      width: size,
-      height: size,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Container(
-            width: innerSize * 0.86,
-            height: innerSize * 0.86,
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              shape: BoxShape.circle,
+    return RepaintBoundary(
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            RepaintBoundary(
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Container(
+                    width: innerSize * 0.86,
+                    height: innerSize * 0.86,
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  SvgPicture.asset(
+                    'assets/images/jio_logo.svg',
+                    width: innerSize,
+                    height: innerSize,
+                    fit: BoxFit.contain,
+                  ),
+                ],
+              ),
             ),
-          ),
-          SvgPicture.asset(
-            'assets/images/jio_logo.svg',
-            width: innerSize,
-            height: innerSize,
-            fit: BoxFit.contain,
-          ),
-          SizedBox(
-            width: size,
-            height: size,
-            child: const CircularProgressIndicator(
-              strokeWidth: 3.2,
-              color: Color(0xFFE65312),
+            RepaintBoundary(
+              child: SizedBox(
+                width: size,
+                height: size,
+                child: const CircularProgressIndicator(
+                  strokeWidth: 3.2,
+                  color: Color(0xFFE65312),
+                ),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -708,13 +719,13 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
     }
   }
 
-  void _precacheVisibleLogos(List<TvChannel> channels) {
-    if (!mounted) return;
-    for (final ch in channels) {
+  Future<void> _precacheVisibleLogos(List<TvChannel> channels) async {
+    for (final ch in channels.take(20)) {
+      if (!mounted) return;
       final url = ch.logo.trim();
       if (url.isEmpty) continue;
-      precacheImage(
-        CachedNetworkImageProvider(url, maxWidth: 160, maxHeight: 160),
+      await precacheImage(
+        CachedNetworkImageProvider(url, maxWidth: 140, maxHeight: 140),
         context,
       ).catchError((_) {});
     }
@@ -1600,6 +1611,99 @@ class _StbProgram {
   });
 }
 
+int _parseEpochMsStatic(dynamic val) {
+  final n = int.tryParse(val?.toString() ?? '') ?? 0;
+  if (n <= 0) return 0;
+  return n < 100000000000 ? n * 1000 : n;
+}
+
+(String, String) _posterCandidatesStatic(String rawPoster) {
+  final clean = rawPoster.trim().replaceFirst(RegExp(r'^/+'), '');
+  if (clean.isEmpty || clean == 'null') return ('', '');
+  if (clean.startsWith('http://') || clean.startsWith('https://')) {
+    return (clean, '');
+  }
+  final rel = clean.startsWith('dare_images/')
+      ? clean
+      : (clean.startsWith('shows/') ? 'dare_images/$clean' : 'dare_images/shows/$clean');
+  return (
+    'https://jiotvimages.cdn.jio.com/$rel',
+    'https://jiotv.catchup.cdn.jio.com/$rel',
+  );
+}
+
+List<Map<String, dynamic>> _parseEpgBatchIsolate(Map<String, dynamic> args) {
+  final bodies = (args['bodies'] as List).cast<String>();
+  final nowMs = args['nowMs'] as int;
+  final cutoffMs = args['cutoffMs'] as int;
+  final channelName = args['channelName'] as String;
+
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  String fmtTime(DateTime dt) {
+    final hour24 = dt.hour;
+    final hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12;
+    final min = dt.minute.toString().padLeft(2, '0');
+    final period = hour24 >= 12 ? 'PM' : 'AM';
+    return '$hour12:$min $period';
+  }
+
+  final seenStart = <int>{};
+  final rawEntries = <Map<String, dynamic>>[];
+
+  for (final body in bodies) {
+    if (body.trim().isEmpty) continue;
+    try {
+      final decoded = jsonDecode(body);
+      final List rows = decoded is Map && decoded['epg'] is List ? decoded['epg'] as List : [];
+      for (final row in rows) {
+        if (row is! Map) continue;
+        final s = _parseEpochMsStatic(row['startEpoch']);
+        final e = _parseEpochMsStatic(row['endEpoch']);
+        if (s <= 0 || e <= s) continue;
+        if (e <= nowMs || s > cutoffMs) continue;
+        if (!seenStart.add(s)) continue;
+        rawEntries.add({
+          '_startMs': s,
+          '_endMs': e,
+          'showname': row['showname'],
+          'description': row['description'],
+          'episodePoster': row['episodePoster'],
+          'showpic': row['showpic'],
+        });
+      }
+    } catch (_) {}
+  }
+
+  rawEntries.sort((a, b) => (a['_startMs'] as int).compareTo(b['_startMs'] as int));
+
+  final out = <Map<String, dynamic>>[];
+  for (final raw in rawEntries) {
+    final sMs = raw['_startMs'] as int;
+    final eMs = raw['_endMs'] as int;
+    final sDt = DateTime.fromMillisecondsSinceEpoch(sMs);
+    final eDt = DateTime.fromMillisecondsSinceEpoch(eMs);
+    final isLive = nowMs >= sMs && nowMs < eMs;
+    final prog = isLive && eMs > sMs
+        ? ((nowMs - sMs) / (eMs - sMs)).clamp(0.05, 0.98)
+        : 0.0;
+    final rawPoster = (raw['episodePoster'] ?? raw['showpic'] ?? '').toString();
+    final posters = _posterCandidatesStatic(rawPoster);
+    final rawTitle = (raw['showname'] ?? '$channelName Show').toString().trim();
+    final rawDesc = (raw['description'] ?? '$channelName television broadcast.').toString().trim();
+    final day = days[(sDt.weekday - 1).clamp(0, 6)];
+    out.add({
+      'title': rawTitle.isEmpty ? '$channelName Show' : rawTitle,
+      'timeLabel': '$day : ${fmtTime(sDt)} - ${fmtTime(eDt)}',
+      'description': rawDesc.isEmpty ? '$channelName television broadcast.' : rawDesc,
+      'posterUrl': posters.$1,
+      'fallbackPosterUrl': posters.$2,
+      'progress': prog,
+      'isLiveNow': isLive,
+    });
+  }
+  return out;
+}
+
 class _EpgService {
   static final Map<int, List<_StbProgram>> _cache = {};
 
@@ -1616,23 +1720,6 @@ class _EpgService {
   static String _weekdayShort(int weekday) {
     const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     return days[(weekday - 1).clamp(0, 6)];
-  }
-
-  static (String, String) _posterCandidates(String rawPoster) {
-    final clean = rawPoster.trim().replaceFirst(RegExp(r'^/+'), '');
-    if (clean.isEmpty || clean == 'null') {
-      return ('', '');
-    }
-    if (clean.startsWith('http://') || clean.startsWith('https://')) {
-      return (clean, '');
-    }
-    final rel = clean.startsWith('dare_images/')
-        ? clean
-        : (clean.startsWith('shows/') ? 'dare_images/$clean' : 'dare_images/shows/$clean');
-    return (
-      'https://jiotvimages.cdn.jio.com/$rel',
-      'https://jiotv.catchup.cdn.jio.com/$rel',
-    );
   }
 
   static List<_StbProgram> fallback48h(TvChannel ch) {
@@ -1723,70 +1810,41 @@ class _EpgService {
             .timeout(const Duration(seconds: 6));
       }));
 
+      final bodies = responses
+          .where((r) => r.statusCode == 200 && r.body.trim().isNotEmpty)
+          .map((r) => r.body)
+          .toList();
+
+      if (bodies.isEmpty) return fallback48h(ch);
+
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final cutoffMs = nowMs + const Duration(hours: 48).inMilliseconds;
-      final seenStart = <int>{};
-      final rawEntries = <Map<String, dynamic>>[];
+      final parsedMaps = await compute(_parseEpgBatchIsolate, {
+        'bodies': bodies,
+        'nowMs': nowMs,
+        'cutoffMs': cutoffMs,
+        'channelName': ch.name,
+      });
 
-      for (final res in responses) {
-        if (res.statusCode != 200 || res.body.trim().isEmpty) continue;
-        final decoded = jsonDecode(res.body);
-        final List rows = decoded is Map && decoded['epg'] is List ? decoded['epg'] as List : [];
-        for (final row in rows) {
-          if (row is! Map) continue;
-          final map = Map<String, dynamic>.from(row);
-          final s = _parseEpochMs(map['startEpoch']);
-          final e = _parseEpochMs(map['endEpoch']);
-          if (s <= 0 || e <= s) continue;
-          if (e <= nowMs || s > cutoffMs) continue;
-          if (!seenStart.add(s)) continue;
-          map['_startMs'] = s;
-          map['_endMs'] = e;
-          rawEntries.add(map);
-        }
-      }
+      if (parsedMaps.isEmpty) return fallback48h(ch);
 
-      if (rawEntries.isEmpty) return fallback48h(ch);
+      final programs = parsedMaps
+          .map((m) => _StbProgram(
+                title: (m['title'] ?? '').toString(),
+                timeLabel: (m['timeLabel'] ?? '').toString(),
+                description: (m['description'] ?? '').toString(),
+                posterUrl: (m['posterUrl'] ?? '').toString(),
+                fallbackPosterUrl: (m['fallbackPosterUrl'] ?? '').toString(),
+                progress: (m['progress'] as num?)?.toDouble() ?? 0.0,
+                isLiveNow: m['isLiveNow'] == true,
+              ))
+          .toList();
 
-      rawEntries.sort((a, b) => (a['_startMs'] as int).compareTo(b['_startMs'] as int));
-
-      final programs = <_StbProgram>[];
-      for (final raw in rawEntries) {
-        final sMs = raw['_startMs'] as int;
-        final eMs = raw['_endMs'] as int;
-        final sDt = DateTime.fromMillisecondsSinceEpoch(sMs);
-        final eDt = DateTime.fromMillisecondsSinceEpoch(eMs);
-        final isLive = nowMs >= sMs && nowMs < eMs;
-        final prog = isLive && eMs > sMs
-            ? ((nowMs - sMs) / (eMs - sMs)).clamp(0.05, 0.98)
-            : 0.0;
-        final rawPoster = (raw['episodePoster'] ?? raw['showpic'] ?? '').toString();
-        final posters = _posterCandidates(rawPoster);
-        final title = (raw['showname'] ?? '${ch.name} Show').toString().trim();
-        final desc = (raw['description'] ?? '${ch.name} television broadcast.').toString().trim();
-        programs.add(_StbProgram(
-          title: title.isEmpty ? '${ch.name} Show' : title,
-          timeLabel: '${_weekdayShort(sDt.weekday)} : ${_fmtTime(sDt)} - ${_fmtTime(eDt)}',
-          description: desc.isEmpty ? '${ch.name} television broadcast.' : desc,
-          posterUrl: posters.$1,
-          fallbackPosterUrl: posters.$2,
-          progress: prog,
-          isLiveNow: isLive,
-        ));
-      }
-
-      if (programs.isEmpty) return fallback48h(ch);
       _cache[ch.id] = programs;
       return programs;
     } catch (_) {
       return fallback48h(ch);
     }
-  }
-
-  static int _parseEpochMs(dynamic val) {
-    final n = int.tryParse(val?.toString() ?? '') ?? 0;
-    if (n <= 0) return 0;
-    return n < 100000000000 ? n * 1000 : n;
   }
 }
 
@@ -1810,8 +1868,7 @@ enum _StbPickerKind { audio, quality, stretch }
 
 class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   static const List<Shadow> _textShadows = [
-    Shadow(color: Color(0xD9000000), blurRadius: 8, offset: Offset(0, 1)),
-    Shadow(color: Color(0x88000000), blurRadius: 2, offset: Offset(0, 0)),
+    Shadow(color: Color(0xCC000000), blurRadius: 2, offset: Offset(0, 1)),
   ];
 
   final FocusNode _playerFocus = FocusNode();
@@ -1844,10 +1901,13 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   Timer? _watchdog;
   Timer? _bannerAutoHideTimer;
   Timer? _clockTimer;
+  Timer? _epgDebounceTimer;
+  Timer? _posterPrecacheDelayTimer;
   DateTime _now = DateTime.now();
   int _playRequestSeq = 0;
-  double _bannerDragX = 0;
-  double _bannerDragY = 0;
+  int _precacheSeq = 0;
+  double _panDeltaX = 0;
+  double _panDeltaY = 0;
 
   TvChannel get _playingChannel => widget.channels[_playingIndex];
   TvChannel get _previewChannel => widget.channels[_previewIndex];
@@ -1865,13 +1925,14 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     super.initState();
     _playingIndex = widget.initialIndex.clamp(0, widget.channels.length - 1);
     _previewIndex = _playingIndex;
-    _previewPrograms = _EpgService.fallback48h(_previewChannel);
+    _previewPrograms = _EpgService.cachedFor(_previewChannel.id) ??
+        _EpgService.fallback48h(_previewChannel);
 
     _clockTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (mounted) setState(() => _now = DateTime.now());
     });
 
-    _loadPreviewSchedule(_previewChannel);
+    _loadPreviewSchedule(_previewChannel, immediateFetch: true);
     _startChannelStream(_playingIndex);
     _scheduleBannerAutoHide();
 
@@ -1890,9 +1951,12 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
 
   @override
   void dispose() {
+    _precacheSeq++;
     _watchdog?.cancel();
     _bannerAutoHideTimer?.cancel();
     _clockTimer?.cancel();
+    _epgDebounceTimer?.cancel();
+    _posterPrecacheDelayTimer?.cancel();
     _channel?.setMethodCallHandler(null);
     _playerFocus.dispose();
     if (!widget.isTv) {
@@ -1912,8 +1976,8 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
         _optionsMode = false;
         _programIndex = 0;
         _previewIndex = _playingIndex;
-        _loadPreviewSchedule(_playingChannel);
       });
+      _loadPreviewSchedule(_playingChannel, immediateFetch: true);
     });
   }
 
@@ -1922,16 +1986,25 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       if (resetToPlaying) {
         _previewIndex = _playingIndex;
         _programIndex = 0;
-        _loadPreviewSchedule(_playingChannel);
       }
       _bannerVisible = true;
       _optionsMode = openOptions;
       if (openOptions) _selectedOptionIdx = _selectedOptionIdx.clamp(0, 3);
     });
+    if (resetToPlaying) {
+      _loadPreviewSchedule(_playingChannel, immediateFetch: true);
+    }
     _scheduleBannerAutoHide();
   }
 
-  Future<void> _loadPreviewSchedule(TvChannel target) async {
+  int? _precachedChannelId;
+
+  void _loadPreviewSchedule(TvChannel target, {bool immediateFetch = false}) {
+    _epgDebounceTimer?.cancel();
+    _posterPrecacheDelayTimer?.cancel();
+    _precacheSeq++;
+    _precachedChannelId = null;
+
     final immediate = _EpgService.cachedFor(target.id);
     setState(() {
       _previewPrograms = (immediate != null && immediate.isNotEmpty)
@@ -1939,57 +2012,55 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
           : _EpgService.fallback48h(target);
       _programIndex = 0;
     });
+
     if (immediate != null && immediate.isNotEmpty) {
-      _precacheSchedulePosters(immediate);
-      _prefetchAdjacentSchedules(_previewIndex);
+      _scheduleGentlePosterPrecache(immediate, target.id);
       return;
     }
-    final fetched = await _EpgService.fetchSchedule48h(target);
-    if (!mounted) return;
-    _precacheSchedulePosters(fetched);
-    _prefetchAdjacentSchedules(_previewIndex);
-    if (_previewChannel.id != target.id) return;
-    setState(() {
-      _previewPrograms = fetched;
-      if (_programIndex >= fetched.length) _programIndex = 0;
+
+    Future<void> runFetch() async {
+      final fetched = await _EpgService.fetchSchedule48h(target);
+      if (!mounted || _previewChannel.id != target.id) return;
+      setState(() {
+        _previewPrograms = fetched;
+        if (_programIndex >= fetched.length) _programIndex = 0;
+      });
+      _scheduleGentlePosterPrecache(fetched, target.id);
+    }
+
+    if (immediateFetch) {
+      runFetch();
+    } else {
+      _epgDebounceTimer = Timer(const Duration(milliseconds: 180), runFetch);
+    }
+  }
+
+  void _scheduleGentlePosterPrecache(List<_StbProgram> programs, int channelId) {
+    if (_precachedChannelId == channelId) return;
+    _posterPrecacheDelayTimer?.cancel();
+    final delayMs = _loading ? 900 : 120;
+    _posterPrecacheDelayTimer = Timer(Duration(milliseconds: delayMs), () {
+      _precacheSchedulePosters(programs, channelId);
     });
   }
 
-  Future<void> _precacheSchedulePosters(List<_StbProgram> programs) async {
-    if (!mounted) return;
-    final urls = <String>{};
+  Future<void> _precacheSchedulePosters(List<_StbProgram> programs, int channelId) async {
+    _precachedChannelId = channelId;
+    final seq = ++_precacheSeq;
+    final seen = <String>{};
+    var count = 0;
     for (final p in programs) {
-      if (p.posterUrl.isNotEmpty) urls.add(p.posterUrl);
-      if (p.fallbackPosterUrl.isNotEmpty) urls.add(p.fallbackPosterUrl);
-    }
-    final urlList = urls.toList();
-    for (var i = 0; i < urlList.length; i += 8) {
-      if (!mounted) return;
-      final batch = urlList.skip(i).take(8);
-      await Future.wait(
-        batch.map(
-          (url) => precacheImage(CachedNetworkImageProvider(url), context).catchError((_) {}),
-        ),
-      );
-    }
-  }
-
-  Future<void> _prefetchAdjacentSchedules(int centerIndex) async {
-    if (!mounted || widget.channels.length <= 1) return;
-    final total = widget.channels.length;
-    for (final offset in [-1, 1, -2, 2]) {
-      final idx = (centerIndex + offset + total) % total;
-      if (idx == centerIndex) continue;
-      final ch = widget.channels[idx];
-      _EpgService.fetchSchedule48h(ch).then((list) {
-        if (!mounted || list.isEmpty) return;
-        final limit = offset.abs() == 1 ? 12 : 4;
-        for (final p in list.take(limit)) {
-          if (p.posterUrl.isNotEmpty) {
-            precacheImage(CachedNetworkImageProvider(p.posterUrl), context).catchError((_) {});
-          }
-        }
-      }).catchError((_) {});
+      if (!mounted || seq != _precacheSeq || _previewChannel.id != channelId) return;
+      final url = p.posterUrl;
+      if (url.isEmpty || !seen.add(url)) continue;
+      await precacheImage(
+        CachedNetworkImageProvider(url, maxWidth: 400, maxHeight: 300),
+        context,
+      ).catchError((_) {});
+      if (!mounted || seq != _precacheSeq || _previewChannel.id != channelId) return;
+      count++;
+      if (count >= 16) break;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
     }
   }
 
@@ -2011,7 +2082,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       _selectedAudioLabel = 'Default';
       _selectedQualityLabel = 'Auto (Best)';
     });
-    _loadPreviewSchedule(target);
+    _loadPreviewSchedule(target, immediateFetch: true);
 
     _watchdog = Timer(const Duration(seconds: 25), () {
       if (!mounted || reqId != _playRequestSeq || !_loading) return;
@@ -2045,10 +2116,14 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       if (!mounted) return;
       if (call.method == 'onStateChanged') {
         final state = (call.arguments ?? 'unknown').toString();
-        setState(() => _loading = state == 'idle' || state == 'buffering');
+        final isBuffering = state == 'idle' || state == 'buffering';
+        if (_loading != isBuffering) {
+          setState(() => _loading = isBuffering);
+        }
         if (state == 'ready' || state == 'ended') {
           _watchdog?.cancel();
           _channel?.invokeMethod('setResizeMode', _resizeMode);
+          _scheduleGentlePosterPrecache(_previewPrograms, _previewChannel.id);
         }
       } else if (call.method == 'onError') {
         _watchdog?.cancel();
@@ -2107,6 +2182,79 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       });
     }
     _scheduleBannerAutoHide();
+  }
+
+  void _triggerLeft() {
+    if (!_bannerVisible) {
+      _showBanner(resetToPlaying: true);
+      return;
+    }
+    if (_optionsMode) {
+      setState(() => _selectedOptionIdx = (_selectedOptionIdx - 1 + 4) % 4);
+      _scheduleBannerAutoHide();
+      return;
+    }
+    _stepPreviewChannel(-1);
+  }
+
+  void _triggerRight() {
+    if (!_bannerVisible) {
+      _showBanner(resetToPlaying: true);
+      return;
+    }
+    if (_optionsMode) {
+      setState(() => _selectedOptionIdx = (_selectedOptionIdx + 1) % 4);
+      _scheduleBannerAutoHide();
+      return;
+    }
+    _stepPreviewChannel(1);
+  }
+
+  void _triggerUp() {
+    if (!_bannerVisible) {
+      _showBanner(resetToPlaying: true);
+      return;
+    }
+    if (_optionsMode) {
+      setState(() => _optionsMode = false);
+      _scheduleBannerAutoHide();
+      return;
+    }
+    _stepProgram(-1);
+  }
+
+  void _triggerDown() {
+    if (!_bannerVisible) {
+      _showBanner(resetToPlaying: true);
+      return;
+    }
+    if (_optionsMode) return;
+    _stepProgram(1);
+  }
+
+  void _triggerOk() {
+    if (_error != null) {
+      _startChannelStream(_previewIndex);
+      return;
+    }
+    if (_openPicker != null) {
+      _applyPickerSelection(_pickerFocusedIdx);
+      return;
+    }
+    if (!_bannerVisible) {
+      _showBanner(resetToPlaying: true);
+      return;
+    }
+    if (_optionsMode) {
+      _triggerOption(_selectedOptionIdx);
+      return;
+    }
+    if (_previewIndex != _playingIndex) {
+      _startChannelStream(_previewIndex);
+      _scheduleBannerAutoHide();
+    } else {
+      _showBanner(openOptions: true);
+    }
   }
 
   Future<void> _openTrackPicker(_StbPickerKind kind) async {
@@ -2330,18 +2478,6 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       return KeyEventResult.handled;
     }
 
-    // Wake banner first on Left / Right / Up / Down when hidden, just like a normal STB player.
-    if (!_bannerVisible &&
-        (key == LogicalKeyboardKey.arrowLeft ||
-            key == LogicalKeyboardKey.arrowRight ||
-            key == LogicalKeyboardKey.arrowUp ||
-            key == LogicalKeyboardKey.arrowDown)) {
-      if (event is KeyDownEvent) {
-        _showBanner(resetToPlaying: true);
-      }
-      return KeyEventResult.handled;
-    }
-
     if (key == LogicalKeyboardKey.channelUp) {
       _stepPreviewChannel(1);
       return KeyEventResult.handled;
@@ -2351,46 +2487,20 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       return KeyEventResult.handled;
     }
 
-    if (_optionsMode) {
-      if (key == LogicalKeyboardKey.arrowLeft) {
-        setState(() => _selectedOptionIdx = (_selectedOptionIdx - 1 + 4) % 4);
-        _scheduleBannerAutoHide();
-        return KeyEventResult.handled;
-      }
-      if (key == LogicalKeyboardKey.arrowRight) {
-        setState(() => _selectedOptionIdx = (_selectedOptionIdx + 1) % 4);
-        _scheduleBannerAutoHide();
-        return KeyEventResult.handled;
-      }
-      if (key == LogicalKeyboardKey.arrowUp) {
-        setState(() => _optionsMode = false);
-        _scheduleBannerAutoHide();
-        return KeyEventResult.handled;
-      }
-      if ((key == LogicalKeyboardKey.select ||
-              key == LogicalKeyboardKey.enter ||
-              key == LogicalKeyboardKey.numpadEnter) &&
-          event is KeyDownEvent) {
-        _triggerOption(_selectedOptionIdx);
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.handled;
-    }
-
     if (key == LogicalKeyboardKey.arrowLeft) {
-      _stepPreviewChannel(-1);
+      _triggerLeft();
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.arrowRight) {
-      _stepPreviewChannel(1);
+      _triggerRight();
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.arrowUp) {
-      _stepProgram(-1);
+      _triggerUp();
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.arrowDown) {
-      _stepProgram(1);
+      _triggerDown();
       return KeyEventResult.handled;
     }
 
@@ -2398,18 +2508,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
             key == LogicalKeyboardKey.enter ||
             key == LogicalKeyboardKey.numpadEnter) &&
         event is KeyDownEvent) {
-      if (_error != null) {
-        _startChannelStream(_previewIndex);
-        return KeyEventResult.handled;
-      }
-      if (!_bannerVisible) {
-        _showBanner(resetToPlaying: true);
-      } else if (_previewIndex != _playingIndex) {
-        _startChannelStream(_previewIndex);
-        _scheduleBannerAutoHide();
-      } else {
-        _showBanner(openOptions: true);
-      }
+      _triggerOk();
       return KeyEventResult.handled;
     }
 
@@ -2477,30 +2576,64 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                 _showBanner(resetToPlaying: true);
               }
             },
-            onLongPress: () => _showBanner(openOptions: true),
+            onDoubleTap: (!widget.isTv && _openPicker == null) ? _triggerOk : null,
+            onLongPress: !widget.isTv ? () => _showBanner(openOptions: true) : null,
+            onPanStart: (!widget.isTv && _openPicker == null)
+                ? (_) {
+                    _panDeltaX = 0;
+                    _panDeltaY = 0;
+                  }
+                : null,
+            onPanUpdate: (!widget.isTv && _openPicker == null)
+                ? (d) {
+                    _panDeltaX += d.delta.dx;
+                    _panDeltaY += d.delta.dy;
+                  }
+                : null,
+            onPanEnd: (!widget.isTv && _openPicker == null)
+                ? (d) {
+                    final vx = d.velocity.pixelsPerSecond.dx;
+                    final vy = d.velocity.pixelsPerSecond.dy;
+                    if (_panDeltaX.abs() >= _panDeltaY.abs()) {
+                      if (_panDeltaX < -36 || vx < -280) {
+                        _triggerRight();
+                      } else if (_panDeltaX > 36 || vx > 280) {
+                        _triggerLeft();
+                      }
+                    } else {
+                      if (_panDeltaY < -32 || vy < -260) {
+                        _triggerDown();
+                      } else if (_panDeltaY > 32 || vy > 260) {
+                        _triggerUp();
+                      }
+                    }
+                  }
+                : null,
             child: Stack(
               fit: StackFit.expand,
               children: [
-                PlatformViewLink(
-                  viewType: 'anas_tv/media3_player',
-                  surfaceFactory: (context, controller) => AndroidViewSurface(
-                    controller: controller as AndroidViewController,
-                    gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
-                    hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+                RepaintBoundary(
+                  child: PlatformViewLink(
+                    viewType: 'anas_tv/media3_player',
+                    surfaceFactory: (context, controller) => AndroidViewSurface(
+                      controller: controller as AndroidViewController,
+                      gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+                      hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+                    ),
+                    onCreatePlatformView: (params) {
+                      return PlatformViewsService.initExpensiveAndroidView(
+                        id: params.id,
+                        viewType: 'anas_tv/media3_player',
+                        layoutDirection: TextDirection.ltr,
+                        creationParams: const <String, dynamic>{},
+                        creationParamsCodec: const StandardMessageCodec(),
+                        onFocus: () => params.onFocusChanged(true),
+                      )
+                        ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
+                        ..addOnPlatformViewCreatedListener(_created)
+                        ..create();
+                    },
                   ),
-                  onCreatePlatformView: (params) {
-                    return PlatformViewsService.initExpensiveAndroidView(
-                      id: params.id,
-                      viewType: 'anas_tv/media3_player',
-                      layoutDirection: TextDirection.ltr,
-                      creationParams: const <String, dynamic>{},
-                      creationParamsCodec: const StandardMessageCodec(),
-                      onFocus: () => params.onFocusChanged(true),
-                    )
-                      ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
-                      ..addOnPlatformViewCreatedListener(_created)
-                      ..create();
-                  },
                 ),
                 if (_loading) const Center(child: _BrandCircularLoader(size: 84)),
                 if (_error != null)
@@ -2608,79 +2741,47 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                     left: 0,
                     right: 0,
                     bottom: 0,
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () {
-                        if (_previewIndex != _playingIndex) {
-                          _startChannelStream(_previewIndex);
-                        } else {
-                          _scheduleBannerAutoHide();
-                        }
-                      },
-                      onHorizontalDragStart: !widget.isTv ? (_) => _bannerDragX = 0 : null,
-                      onHorizontalDragUpdate:
-                          !widget.isTv ? (d) => _bannerDragX += d.delta.dx : null,
-                      onHorizontalDragEnd: !widget.isTv
-                          ? (d) {
-                              if (_bannerDragX < -40 || (d.primaryVelocity ?? 0) < -200) {
-                                _stepPreviewChannel(1);
-                              } else if (_bannerDragX > 40 || (d.primaryVelocity ?? 0) > 200) {
-                                _stepPreviewChannel(-1);
-                              }
-                            }
-                          : null,
-                      onVerticalDragStart: !widget.isTv ? (_) => _bannerDragY = 0 : null,
-                      onVerticalDragUpdate:
-                          !widget.isTv ? (d) => _bannerDragY += d.delta.dy : null,
-                      onVerticalDragEnd: !widget.isTv
-                          ? (d) {
-                              if (_bannerDragY < -30 || (d.primaryVelocity ?? 0) < -200) {
-                                _stepProgram(1);
-                              } else if (_bannerDragY > 30 || (d.primaryVelocity ?? 0) > 200) {
-                                _stepProgram(-1);
-                              }
-                            }
-                          : null,
-                      child: SafeArea(
-                        top: false,
-                        child: Stack(
-                          clipBehavior: Clip.none,
-                          alignment: Alignment.bottomLeft,
-                          children: [
-                            Positioned(
-                              left: 0,
-                              right: 0,
-                              top: stripTopOffset,
-                              bottom: 0,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    begin: Alignment.topCenter,
-                                    end: Alignment.bottomCenter,
-                                    colors: [
-                                      Colors.black.withValues(alpha: 0.10),
-                                      Colors.black.withValues(alpha: 0.20),
-                                    ],
-                                  ),
+                    child: SafeArea(
+                      top: false,
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        alignment: Alignment.bottomLeft,
+                        children: [
+                          Positioned(
+                            left: 0,
+                            right: 0,
+                            top: stripTopOffset,
+                            bottom: 0,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                  colors: [
+                                    Colors.black.withValues(alpha: 0.10),
+                                    Colors.black.withValues(alpha: 0.20),
+                                  ],
                                 ),
                               ),
                             ),
-                            Padding(
-                              padding: EdgeInsets.fromLTRB(
-                                compactLayout ? 14 : 28,
-                                0,
-                                compactLayout ? 14 : 28,
-                                compactLayout ? 10 : 16,
-                              ),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.end,
-                                children: [
-                                  SizedBox(
+                          ),
+                          Padding(
+                            padding: EdgeInsets.fromLTRB(
+                              compactLayout ? 14 : 28,
+                              0,
+                              compactLayout ? 14 : 28,
+                              compactLayout ? 10 : 16,
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                RepaintBoundary(
+                                  child: SizedBox(
                                     width: posterWidth,
                                     height: posterHeight,
                                     child: ClipRect(
                                       child: AnimatedSwitcher(
-                                        duration: const Duration(milliseconds: 240),
+                                        duration: const Duration(milliseconds: 180),
                                         switchInCurve: Curves.easeOutCubic,
                                         switchOutCurve: Curves.easeInCubic,
                                         layoutBuilder: (currentChild, previousChildren) => Stack(
@@ -2693,8 +2794,8 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                                         transitionBuilder: (child, animation) {
                                           final isIncoming = child.key == posterKey;
                                           final beginOffset = isIncoming
-                                              ? Offset(0, _programAnimDir >= 0 ? 0.45 : -0.45)
-                                              : Offset(0, _programAnimDir >= 0 ? -0.35 : 0.35);
+                                              ? Offset(0, _programAnimDir >= 0 ? 0.30 : -0.30)
+                                              : Offset(0, _programAnimDir >= 0 ? -0.25 : 0.25);
                                           return FadeTransition(
                                             opacity: animation,
                                             child: SlideTransition(
@@ -2717,8 +2818,10 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                                       ),
                                     ),
                                   ),
-                                  SizedBox(width: compactLayout ? 14 : 22),
-                                  Expanded(
+                                ),
+                                SizedBox(width: compactLayout ? 14 : 22),
+                                Expanded(
+                                  child: RepaintBoundary(
                                     child: Padding(
                                       padding: EdgeInsets.only(top: stripTopOffset + (compactLayout ? 8 : 10)),
                                       child: Column(
@@ -2794,7 +2897,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                                               ? _buildStbOptionsBar()
                                               : ClipRect(
                                                   child: AnimatedSwitcher(
-                                                    duration: const Duration(milliseconds: 240),
+                                                    duration: const Duration(milliseconds: 180),
                                                     switchInCurve: Curves.easeOutCubic,
                                                     switchOutCurve: Curves.easeInCubic,
                                                     layoutBuilder: (currentChild, previousChildren) => Stack(
@@ -2807,8 +2910,8 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                                                     transitionBuilder: (child, animation) {
                                                       final isIncoming = child.key == progKey;
                                                       final beginOffset = isIncoming
-                                                          ? Offset(0, _programAnimDir >= 0 ? 0.55 : -0.55)
-                                                          : Offset(0, _programAnimDir >= 0 ? -0.45 : 0.45);
+                                                          ? Offset(0, _programAnimDir >= 0 ? 0.35 : -0.35)
+                                                          : Offset(0, _programAnimDir >= 0 ? -0.30 : 0.30);
                                                       return FadeTransition(
                                                         opacity: animation,
                                                         child: SlideTransition(
@@ -2843,11 +2946,11 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                                       ),
                                     ),
                                   ),
-                                ],
-                              ),
+                                ),
+                              ],
                             ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -3164,6 +3267,8 @@ class _ProgramPosterState extends State<_ProgramPoster> {
       fit: BoxFit.cover,
       width: double.infinity,
       height: double.infinity,
+      memCacheWidth: 400,
+      memCacheHeight: 300,
       fadeInDuration: Duration.zero,
       fadeOutDuration: Duration.zero,
       useOldImageOnUrlChange: true,
@@ -3463,8 +3568,8 @@ class _ChannelLogoState extends State<_ChannelLogo> {
     return CachedNetworkImage(
       imageUrl: url,
       fit: BoxFit.contain,
-      memCacheWidth: 160,
-      memCacheHeight: 160,
+      memCacheWidth: 140,
+      memCacheHeight: 140,
       fadeInDuration: Duration.zero,
       fadeOutDuration: Duration.zero,
       useOldImageOnUrlChange: true,
