@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -23,8 +24,8 @@ class _AnasTvAppState extends State<AnasTvApp> {
   @override
   void initState() {
     super.initState();
-    PaintingBinding.instance.imageCache.maximumSize = 500;
-    PaintingBinding.instance.imageCache.maximumSizeBytes = 128 << 20;
+    PaintingBinding.instance.imageCache.maximumSize = 1500;
+    PaintingBinding.instance.imageCache.maximumSizeBytes = 256 << 20;
     _detectDeviceMode();
   }
 
@@ -694,6 +695,7 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
           selectedTab = 'ALL';
         }
       });
+      _precacheVisibleLogos(_filteredChannels.take(48).toList());
       if (widget.isTv) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted && _filteredChannels.isNotEmpty) _focusCard(0);
@@ -703,6 +705,18 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
       if (mounted) setState(() => error = e.toString().replaceFirst('Exception: ', ''));
     } finally {
       if (mounted) setState(() => loading = false);
+    }
+  }
+
+  void _precacheVisibleLogos(List<TvChannel> channels) {
+    if (!mounted) return;
+    for (final ch in channels) {
+      final url = ch.logo.trim();
+      if (url.isEmpty) continue;
+      precacheImage(
+        CachedNetworkImageProvider(url, maxWidth: 160, maxHeight: 160),
+        context,
+      ).catchError((_) {});
     }
   }
 
@@ -726,6 +740,7 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
 
   void _selectTab(String label) {
     setState(() => selectedTab = label);
+    _precacheVisibleLogos(_filteredChannels.take(32).toList());
     if (_gridScroll.hasClients) {
       _gridScroll.jumpTo(0);
     }
@@ -1588,6 +1603,8 @@ class _StbProgram {
 class _EpgService {
   static final Map<int, List<_StbProgram>> _cache = {};
 
+  static List<_StbProgram>? cachedFor(int channelId) => _cache[channelId];
+
   static String _fmtTime(DateTime dt) {
     final hour24 = dt.hour;
     final hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12;
@@ -1601,13 +1618,13 @@ class _EpgService {
     return days[(weekday - 1).clamp(0, 6)];
   }
 
-  static (String, String) _posterCandidates(String rawPoster, TvChannel ch) {
+  static (String, String) _posterCandidates(String rawPoster) {
     final clean = rawPoster.trim().replaceFirst(RegExp(r'^/+'), '');
     if (clean.isEmpty || clean == 'null') {
-      return (ch.logo, ch.fallbackLogo);
+      return ('', '');
     }
     if (clean.startsWith('http://') || clean.startsWith('https://')) {
-      return (clean, ch.logo);
+      return (clean, '');
     }
     final rel = clean.startsWith('dare_images/')
         ? clean
@@ -1671,7 +1688,7 @@ class _EpgService {
 
     final list = <_StbProgram>[];
     for (var i = 0; i < 48; i++) {
-      final start = firstStart.add(Duration(hours: i == 0 ? 0 : 0, minutes: i * 60 - (i > 0 ? 30 : 0)));
+      final start = firstStart.add(Duration(minutes: i * 60 - (i > 0 ? 30 : 0)));
       final end = i == 0 ? firstStart.add(const Duration(minutes: 30)) : start.add(const Duration(minutes: 60));
       final tpl = templates[i % templates.length];
       final prog = i == 0
@@ -1681,8 +1698,8 @@ class _EpgService {
         title: tpl.$1,
         timeLabel: '${_weekdayShort(start.weekday)} : ${_fmtTime(start)} - ${_fmtTime(end)}',
         description: tpl.$2,
-        posterUrl: ch.logo,
-        fallbackPosterUrl: ch.fallbackLogo,
+        posterUrl: '',
+        fallbackPosterUrl: '',
         progress: prog,
         isLiveNow: i == 0,
       ));
@@ -1744,7 +1761,7 @@ class _EpgService {
             ? ((nowMs - sMs) / (eMs - sMs)).clamp(0.05, 0.98)
             : 0.0;
         final rawPoster = (raw['episodePoster'] ?? raw['showpic'] ?? '').toString();
-        final posters = _posterCandidates(rawPoster, ch);
+        final posters = _posterCandidates(rawPoster);
         final title = (raw['showname'] ?? '${ch.name} Show').toString().trim();
         final desc = (raw['description'] ?? '${ch.name} television broadcast.').toString().trim();
         programs.add(_StbProgram(
@@ -1803,6 +1820,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   late int _previewIndex;
   late List<_StbProgram> _previewPrograms;
   int _programIndex = 0;
+  int _programAnimDir = 1;
 
   ResolvedPlayback? _resolved;
   String? _error;
@@ -1829,6 +1847,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   DateTime _now = DateTime.now();
   int _playRequestSeq = 0;
   double _bannerDragX = 0;
+  double _bannerDragY = 0;
 
   TvChannel get _playingChannel => widget.channels[_playingIndex];
   TvChannel get _previewChannel => widget.channels[_previewIndex];
@@ -1839,13 +1858,6 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     }
     final idx = _programIndex.clamp(0, _previewPrograms.length - 1);
     return _previewPrograms[idx];
-  }
-
-  _StbProgram? get _nextTeaserProgram {
-    if (_programIndex + 1 < _previewPrograms.length) {
-      return _previewPrograms[_programIndex + 1];
-    }
-    return null;
   }
 
   @override
@@ -1920,16 +1932,65 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   }
 
   Future<void> _loadPreviewSchedule(TvChannel target) async {
+    final immediate = _EpgService.cachedFor(target.id);
     setState(() {
-      _previewPrograms = _EpgService.fallback48h(target);
+      _previewPrograms = (immediate != null && immediate.isNotEmpty)
+          ? immediate
+          : _EpgService.fallback48h(target);
       _programIndex = 0;
     });
+    if (immediate != null && immediate.isNotEmpty) {
+      _precacheSchedulePosters(immediate);
+      _prefetchAdjacentSchedules(_previewIndex);
+      return;
+    }
     final fetched = await _EpgService.fetchSchedule48h(target);
-    if (!mounted || _previewChannel.id != target.id) return;
+    if (!mounted) return;
+    _precacheSchedulePosters(fetched);
+    _prefetchAdjacentSchedules(_previewIndex);
+    if (_previewChannel.id != target.id) return;
     setState(() {
       _previewPrograms = fetched;
       if (_programIndex >= fetched.length) _programIndex = 0;
     });
+  }
+
+  Future<void> _precacheSchedulePosters(List<_StbProgram> programs) async {
+    if (!mounted) return;
+    final urls = <String>{};
+    for (final p in programs) {
+      if (p.posterUrl.isNotEmpty) urls.add(p.posterUrl);
+      if (p.fallbackPosterUrl.isNotEmpty) urls.add(p.fallbackPosterUrl);
+    }
+    final urlList = urls.toList();
+    for (var i = 0; i < urlList.length; i += 8) {
+      if (!mounted) return;
+      final batch = urlList.skip(i).take(8);
+      await Future.wait(
+        batch.map(
+          (url) => precacheImage(CachedNetworkImageProvider(url), context).catchError((_) {}),
+        ),
+      );
+    }
+  }
+
+  Future<void> _prefetchAdjacentSchedules(int centerIndex) async {
+    if (!mounted || widget.channels.length <= 1) return;
+    final total = widget.channels.length;
+    for (final offset in [-1, 1, -2, 2]) {
+      final idx = (centerIndex + offset + total) % total;
+      if (idx == centerIndex) continue;
+      final ch = widget.channels[idx];
+      _EpgService.fetchSchedule48h(ch).then((list) {
+        if (!mounted || list.isEmpty) return;
+        final limit = offset.abs() == 1 ? 12 : 4;
+        for (final p in list.take(limit)) {
+          if (p.posterUrl.isNotEmpty) {
+            precacheImage(CachedNetworkImageProvider(p.posterUrl), context).catchError((_) {});
+          }
+        }
+      }).catchError((_) {});
+    }
   }
 
   Future<void> _startChannelStream(int targetIndex) async {
@@ -2030,6 +2091,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       _optionsMode = false;
       _previewIndex = nextIdx;
       _programIndex = 0;
+      _programAnimDir = 1;
     });
     _loadPreviewSchedule(widget.channels[nextIdx]);
     _scheduleBannerAutoHide();
@@ -2039,7 +2101,10 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     if (_previewPrograms.isEmpty) return;
     final next = (_programIndex + delta).clamp(0, _previewPrograms.length - 1);
     if (next != _programIndex) {
-      setState(() => _programIndex = next);
+      setState(() {
+        _programAnimDir = delta >= 0 ? 1 : -1;
+        _programIndex = next;
+      });
     }
     _scheduleBannerAutoHide();
   }
@@ -2375,9 +2440,13 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   Widget build(BuildContext context) {
     final previewCh = _previewChannel;
     final activeProgram = _activeProgram;
-    final nextProgram = _nextTeaserProgram;
     final screenW = MediaQuery.sizeOf(context).width;
     final compactLayout = screenW < 720;
+    final posterWidth = compactLayout ? 152.0 : 260.0;
+    final posterHeight = compactLayout ? 160.0 : 200.0;
+    final stripTopOffset = compactLayout ? 34.0 : 48.0;
+    final progKey = ValueKey('${previewCh.id}_$_programIndex');
+    final posterKey = ValueKey('poster_${previewCh.id}_$_programIndex');
 
     return PopScope(
       canPop: false,
@@ -2560,146 +2629,224 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                               }
                             }
                           : null,
-                      child: Container(
-                        padding: EdgeInsets.fromLTRB(
-                          compactLayout ? 14 : 28,
-                          14,
-                          compactLayout ? 14 : 28,
-                          compactLayout ? 10 : 14,
-                        ),
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              Colors.black.withValues(alpha: 0.06),
-                              Colors.black.withValues(alpha: 0.16),
-                              Colors.black.withValues(alpha: 0.22),
-                            ],
-                            stops: const [0.0, 0.3, 1.0],
-                          ),
-                        ),
-                        child: SafeArea(
-                          top: false,
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(6),
-                                child: Container(
-                                  width: compactLayout ? 134 : 204,
-                                  height: compactLayout ? 84 : 118,
-                                  color: Colors.black.withValues(alpha: 0.28),
-                                  child: _ProgramPoster(
-                                    primaryUrl: activeProgram.posterUrl,
-                                    fallbackUrl: activeProgram.fallbackPosterUrl,
-                                    channelLogo: previewCh.logo,
-                                    channelFallbackLogo: previewCh.fallbackLogo,
+                      onVerticalDragStart: !widget.isTv ? (_) => _bannerDragY = 0 : null,
+                      onVerticalDragUpdate:
+                          !widget.isTv ? (d) => _bannerDragY += d.delta.dy : null,
+                      onVerticalDragEnd: !widget.isTv
+                          ? (d) {
+                              if (_bannerDragY < -30 || (d.primaryVelocity ?? 0) < -200) {
+                                _stepProgram(1);
+                              } else if (_bannerDragY > 30 || (d.primaryVelocity ?? 0) > 200) {
+                                _stepProgram(-1);
+                              }
+                            }
+                          : null,
+                      child: SafeArea(
+                        top: false,
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          alignment: Alignment.bottomLeft,
+                          children: [
+                            Positioned(
+                              left: 0,
+                              right: 0,
+                              top: stripTopOffset,
+                              bottom: 0,
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter,
+                                    colors: [
+                                      Colors.black.withValues(alpha: 0.10),
+                                      Colors.black.withValues(alpha: 0.20),
+                                    ],
                                   ),
                                 ),
                               ),
-                              SizedBox(width: compactLayout ? 12 : 18),
-                              Expanded(
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        Text(
-                                          '${_previewIndex + 101}',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.w800,
-                                            shadows: _textShadows,
+                            ),
+                            Padding(
+                              padding: EdgeInsets.fromLTRB(
+                                compactLayout ? 14 : 28,
+                                0,
+                                compactLayout ? 14 : 28,
+                                compactLayout ? 10 : 16,
+                              ),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                children: [
+                                  SizedBox(
+                                    width: posterWidth,
+                                    height: posterHeight,
+                                    child: ClipRect(
+                                      child: AnimatedSwitcher(
+                                        duration: const Duration(milliseconds: 240),
+                                        switchInCurve: Curves.easeOutCubic,
+                                        switchOutCurve: Curves.easeInCubic,
+                                        layoutBuilder: (currentChild, previousChildren) => Stack(
+                                          fit: StackFit.expand,
+                                          children: [
+                                            ...previousChildren,
+                                            if (currentChild != null) currentChild,
+                                          ],
+                                        ),
+                                        transitionBuilder: (child, animation) {
+                                          final isIncoming = child.key == posterKey;
+                                          final beginOffset = isIncoming
+                                              ? Offset(0, _programAnimDir >= 0 ? 0.45 : -0.45)
+                                              : Offset(0, _programAnimDir >= 0 ? -0.35 : 0.35);
+                                          return FadeTransition(
+                                            opacity: animation,
+                                            child: SlideTransition(
+                                              position: Tween<Offset>(
+                                                begin: beginOffset,
+                                                end: Offset.zero,
+                                              ).animate(animation),
+                                              child: child,
+                                            ),
+                                          );
+                                        },
+                                        child: KeyedSubtree(
+                                          key: posterKey,
+                                          child: _ProgramPoster(
+                                            primaryUrl: activeProgram.posterUrl,
+                                            fallbackUrl: activeProgram.fallbackPosterUrl,
+                                            title: activeProgram.title,
                                           ),
                                         ),
-                                        const SizedBox(width: 10),
-                                        Expanded(
-                                          child: Text(
-                                            previewCh.name,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 16,
-                                              fontWeight: FontWeight.w700,
-                                              shadows: _textShadows,
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 10),
-                                        InkWell(
-                                          onTap: () => _showBanner(openOptions: !_optionsMode),
-                                          borderRadius: BorderRadius.circular(14),
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 4),
-                                            decoration: BoxDecoration(
-                                              color: _optionsMode
-                                                  ? const Color(0xFFE65312)
-                                                  : Colors.white.withValues(alpha: 0.92),
-                                              borderRadius: BorderRadius.circular(14),
-                                            ),
-                                            child: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                Icon(
-                                                  Icons.tune_rounded,
-                                                  size: 13,
-                                                  color: _optionsMode ? Colors.white : Colors.black,
+                                      ),
+                                    ),
+                                  ),
+                                  SizedBox(width: compactLayout ? 14 : 22),
+                                  Expanded(
+                                    child: Padding(
+                                      padding: EdgeInsets.only(top: stripTopOffset + (compactLayout ? 8 : 10)),
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            crossAxisAlignment: CrossAxisAlignment.center,
+                                            children: [
+                                              Text(
+                                                '${_previewIndex + 101}',
+                                                style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: compactLayout ? 19 : 24,
+                                                  height: 1.1,
+                                                  fontWeight: FontWeight.w800,
+                                                  shadows: _textShadows,
                                                 ),
-                                                const SizedBox(width: 4),
-                                                Text(
-                                                  'Options',
+                                              ),
+                                              const SizedBox(width: 12),
+                                              Expanded(
+                                                child: Text(
+                                                  previewCh.name,
+                                                  maxLines: 1,
+                                                  overflow: TextOverflow.ellipsis,
                                                   style: TextStyle(
-                                                    color: _optionsMode ? Colors.white : Colors.black,
-                                                    fontSize: 11.5,
-                                                    fontWeight: FontWeight.w700,
+                                                    color: Colors.white,
+                                                    fontSize: compactLayout ? 19 : 24,
+                                                    height: 1.1,
+                                                    fontWeight: FontWeight.w800,
+                                                    letterSpacing: 0.25,
+                                                    shadows: _textShadows,
                                                   ),
                                                 ),
-                                              ],
+                                              ),
+                                              const SizedBox(width: 12),
+                                              InkWell(
+                                                onTap: () => _showBanner(openOptions: !_optionsMode),
+                                                borderRadius: BorderRadius.circular(14),
+                                                child: Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 4),
+                                                  decoration: BoxDecoration(
+                                                    color: _optionsMode
+                                                        ? const Color(0xFFE65312)
+                                                        : Colors.white.withValues(alpha: 0.92),
+                                                    borderRadius: BorderRadius.circular(14),
+                                                  ),
+                                                  child: Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      Icon(
+                                                        Icons.tune_rounded,
+                                                        size: 13,
+                                                        color: _optionsMode ? Colors.white : Colors.black,
+                                                      ),
+                                                      const SizedBox(width: 4),
+                                                      Text(
+                                                        'Options',
+                                                        style: TextStyle(
+                                                          color: _optionsMode ? Colors.white : Colors.black,
+                                                          fontSize: 11.5,
+                                                          fontWeight: FontWeight.w700,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          SizedBox(height: compactLayout ? 7 : 10),
+                                          _optionsMode
+                                              ? _buildStbOptionsBar()
+                                              : ClipRect(
+                                                  child: AnimatedSwitcher(
+                                                    duration: const Duration(milliseconds: 240),
+                                                    switchInCurve: Curves.easeOutCubic,
+                                                    switchOutCurve: Curves.easeInCubic,
+                                                    layoutBuilder: (currentChild, previousChildren) => Stack(
+                                                      alignment: Alignment.topLeft,
+                                                      children: [
+                                                        ...previousChildren,
+                                                        if (currentChild != null) currentChild,
+                                                      ],
+                                                    ),
+                                                    transitionBuilder: (child, animation) {
+                                                      final isIncoming = child.key == progKey;
+                                                      final beginOffset = isIncoming
+                                                          ? Offset(0, _programAnimDir >= 0 ? 0.55 : -0.55)
+                                                          : Offset(0, _programAnimDir >= 0 ? -0.45 : 0.45);
+                                                      return FadeTransition(
+                                                        opacity: animation,
+                                                        child: SlideTransition(
+                                                          position: Tween<Offset>(
+                                                            begin: beginOffset,
+                                                            end: Offset.zero,
+                                                          ).animate(animation),
+                                                          child: child,
+                                                        ),
+                                                      );
+                                                    },
+                                                    child: KeyedSubtree(
+                                                      key: progKey,
+                                                      child: _buildStbProgramDetails(
+                                                        activeProgram,
+                                                        compactLayout: compactLayout,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                          SizedBox(height: compactLayout ? 8 : 10),
+                                          ClipRRect(
+                                            borderRadius: BorderRadius.circular(2),
+                                            child: LinearProgressIndicator(
+                                              minHeight: 3,
+                                              value: activeProgram.isLiveNow ? activeProgram.progress : 0.0,
+                                              backgroundColor: Colors.white.withValues(alpha: 0.25),
+                                              valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFE53935)),
                                             ),
                                           ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 6),
-                                    _optionsMode
-                                        ? _buildStbOptionsBar()
-                                        : _buildStbProgramDetails(activeProgram),
-                                    const SizedBox(height: 8),
-                                    ClipRRect(
-                                      borderRadius: BorderRadius.circular(2),
-                                      child: LinearProgressIndicator(
-                                        minHeight: 3,
-                                        value: activeProgram.isLiveNow ? activeProgram.progress : 0.0,
-                                        backgroundColor: Colors.white.withValues(alpha: 0.25),
-                                        valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFE53935)),
+                                        ],
                                       ),
                                     ),
-                                    if (!_optionsMode && nextProgram != null) ...[
-                                      const SizedBox(height: 6),
-                                      InkWell(
-                                        onTap: () => _stepProgram(1),
-                                        child: Text(
-                                          '${nextProgram.title}  •  ${nextProgram.timeLabel}',
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            color: Color(0xFFE6EAF2),
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w500,
-                                            shadows: _textShadows,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ],
-                                ),
+                                  ),
+                                ],
                               ),
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
@@ -2713,7 +2860,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     );
   }
 
-  Widget _buildStbProgramDetails(_StbProgram program) {
+  Widget _buildStbProgramDetails(_StbProgram program, {required bool compactLayout}) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2722,34 +2869,34 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
           program.title,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
+          style: TextStyle(
             color: Colors.white,
-            fontSize: 15.5,
+            fontSize: compactLayout ? 14.5 : 17,
             fontWeight: FontWeight.w700,
             shadows: _textShadows,
           ),
         ),
-        const SizedBox(height: 3),
+        SizedBox(height: compactLayout ? 5 : 6),
         Text(
           program.timeLabel,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            color: Color(0xFFF0F3F8),
-            fontSize: 12,
+          style: TextStyle(
+            color: const Color(0xFFF0F4FA),
+            fontSize: compactLayout ? 12 : 13.5,
             fontWeight: FontWeight.w600,
             shadows: _textShadows,
           ),
         ),
-        const SizedBox(height: 4),
+        SizedBox(height: compactLayout ? 6 : 7),
         Text(
           program.description,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            color: Color(0xFFDDE2EC),
-            fontSize: 11.5,
-            height: 1.25,
+          style: TextStyle(
+            color: const Color(0xFFD6DCE8),
+            fontSize: compactLayout ? 11 : 12.5,
+            height: 1.35,
             shadows: _textShadows,
           ),
         ),
@@ -2941,14 +3088,12 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
 class _ProgramPoster extends StatefulWidget {
   final String primaryUrl;
   final String fallbackUrl;
-  final String channelLogo;
-  final String channelFallbackLogo;
+  final String title;
 
   const _ProgramPoster({
     required this.primaryUrl,
     required this.fallbackUrl,
-    required this.channelLogo,
-    required this.channelFallbackLogo,
+    required this.title,
   });
 
   @override
@@ -2962,8 +3107,7 @@ class _ProgramPosterState extends State<_ProgramPoster> {
   void didUpdateWidget(covariant _ProgramPoster oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.primaryUrl != widget.primaryUrl ||
-        oldWidget.fallbackUrl != widget.fallbackUrl ||
-        oldWidget.channelLogo != widget.channelLogo) {
+        oldWidget.fallbackUrl != widget.fallbackUrl) {
       _attempt = 0;
     }
   }
@@ -2971,41 +3115,67 @@ class _ProgramPosterState extends State<_ProgramPoster> {
   List<String> get _candidates => [
         widget.primaryUrl,
         widget.fallbackUrl,
-        widget.channelLogo,
-        widget.channelFallbackLogo,
       ].where((u) => u.trim().isNotEmpty).toSet().toList();
+
+  Widget _placeholder() {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF1D2230), Color(0xFF0D1017)],
+        ),
+      ),
+      alignment: Alignment.center,
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.live_tv_rounded, size: 38, color: Color(0xFFE65312)),
+          if (widget.title.trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              widget.title,
+              maxLines: 2,
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final urls = _candidates;
     if (_attempt >= urls.length) {
-      return const Center(
-        child: Icon(Icons.live_tv_rounded, size: 38, color: Colors.white70),
-      );
+      return _placeholder();
     }
     final url = urls[_attempt];
-    final isChannelFallbackLogo = url == widget.channelLogo || url == widget.channelFallbackLogo;
 
-    return Container(
-      color: isChannelFallbackLogo ? Colors.white.withValues(alpha: 0.92) : Colors.black26,
-      padding: isChannelFallbackLogo ? const EdgeInsets.all(10) : EdgeInsets.zero,
-      child: Image.network(
-        url,
-        fit: isChannelFallbackLogo ? BoxFit.contain : BoxFit.cover,
-        width: double.infinity,
-        height: double.infinity,
-        gaplessPlayback: true,
-        errorBuilder: (_, __, ___) {
-          if (_attempt + 1 < urls.length) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) setState(() => _attempt++);
-            });
-          }
-          return const Center(
-            child: Icon(Icons.live_tv_rounded, size: 38, color: Colors.white70),
-          );
-        },
-      ),
+    return CachedNetworkImage(
+      imageUrl: url,
+      fit: BoxFit.cover,
+      width: double.infinity,
+      height: double.infinity,
+      fadeInDuration: Duration.zero,
+      fadeOutDuration: Duration.zero,
+      useOldImageOnUrlChange: true,
+      placeholder: (_, __) => _placeholder(),
+      errorWidget: (_, __, ___) {
+        if (_attempt + 1 < urls.length) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) setState(() => _attempt++);
+          });
+        }
+        return _placeholder();
+      },
     );
   }
 }
@@ -3274,17 +3444,31 @@ class _ChannelLogo extends StatefulWidget {
 
 class _ChannelLogoState extends State<_ChannelLogo> {
   bool fallback = false;
+
+  @override
+  void didUpdateWidget(covariant _ChannelLogo oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.primaryUrl != widget.primaryUrl ||
+        oldWidget.fallbackUrl != widget.fallbackUrl) {
+      fallback = false;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final url = fallback ? widget.fallbackUrl : widget.primaryUrl;
-    if (url.isEmpty) return const Center(child: Icon(Icons.tv_rounded, size: 28, color: Colors.grey));
-    return Image.network(
-      url,
+    if (url.isEmpty) {
+      return const Center(child: Icon(Icons.tv_rounded, size: 28, color: Colors.grey));
+    }
+    return CachedNetworkImage(
+      imageUrl: url,
       fit: BoxFit.contain,
-      cacheWidth: 160,
-      cacheHeight: 160,
-      gaplessPlayback: true,
-      errorBuilder: (_, __, ___) {
+      memCacheWidth: 160,
+      memCacheHeight: 160,
+      fadeInDuration: Duration.zero,
+      fadeOutDuration: Duration.zero,
+      useOldImageOnUrlChange: true,
+      errorWidget: (_, __, ___) {
         if (!fallback && widget.fallbackUrl.isNotEmpty && widget.fallbackUrl != widget.primaryUrl) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) setState(() => fallback = true);
