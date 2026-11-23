@@ -34,6 +34,16 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-anas-tv-${{ runner.os }}-${{ hashFiles('anas_tv_flutter/pubspec.yaml') }}
+          restore-keys: |
+            gradle-anas-tv-${{ runner.os }}-
+
       - name: Generate Android project files if missing
         run: |
           if [ ! -d android ]; then
@@ -114,11 +124,27 @@ jobs:
             cp ../public/assets/aistudio/JPEG_Download_Jio-Logo-Colour-Navi-Midnight_c9b3d304.jpg assets/images/jio_loader.jpg
           fi
 
+      - name: Add Google Maven Central mirror to avoid 429 rate limits
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          mirror_line = '        maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }'
+          for rel in ["android/settings.gradle.kts", "android/build.gradle.kts"]:
+              p = Path(rel)
+              if not p.exists():
+                  continue
+              s = p.read_text()
+              if "maven-central.storage-download.googleapis.com" not in s and "mavenCentral()" in s:
+                  s = s.replace("mavenCentral()", mirror_line.strip() + "\n        mavenCentral()")
+                  p.write_text(s)
+          PY
+
       - name: Install dependencies
         run: flutter pub get
 
       - name: Build release APK
-        run: flutter build apk --release
+        run: flutter build apk --release || (sleep 10 && flutter build apk --release)
 
       - name: Upload AnasTV Flutter APK
         uses: actions/upload-artifact@v4
