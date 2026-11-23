@@ -72,7 +72,7 @@ class _AnasTvAppState extends State<AnasTvApp> {
 }
 
 class TvChannel {
-  final int id, categoryId, languageId, order;
+  final int id, categoryId, languageId, order, channelNumber;
   final String name, logo, fallbackLogo, category, language;
   final bool hd;
   final int? epgChannelId;
@@ -90,12 +90,14 @@ class TvChannel {
     required this.language,
     required this.hd,
     required this.order,
+    this.channelNumber = 0,
     this.epgChannelId,
     this.epgChannelName,
     this.raw,
   });
 
   TvChannel copyWith({
+    int? channelNumber,
     String? logo,
     String? fallbackLogo,
     int? epgChannelId,
@@ -112,6 +114,7 @@ class TvChannel {
       language: language,
       hd: hd,
       order: order,
+      channelNumber: channelNumber ?? this.channelNumber,
       epgChannelId: epgChannelId ?? this.epgChannelId,
       epgChannelName: epgChannelName ?? this.epgChannelName,
       raw: raw,
@@ -123,12 +126,25 @@ class _ChannelMatcher {
   static final RegExp _nonAlnum = RegExp(r'[^a-z0-9\s]+');
   static final RegExp _multiSpace = RegExp(r'\s+');
   static final RegExp _bracketed = RegExp(r'[\(\[\{].*?[\)\]\}]');
+  static final RegExp _sonySportsTen = RegExp(r'\bsony\s+sports?\s+ten\b');
+  static final RegExp _sonyEnt = RegExp(r'\bsony\s+entertainment\s+television\b');
+  static final RegExp _joinedDigits = RegExp(r'\b(ten|max|sports|sab|wah|mix|pal|pix)(\d+)\b');
 
   static String exactKey(String name) {
     var s = name.toLowerCase().replaceAll('&', ' and ');
     s = s.replaceAll(_bracketed, ' ');
     s = s.replaceAll(_nonAlnum, ' ').replaceAll(_multiSpace, ' ').trim();
-    return s;
+    s = s.replaceAllMapped(_joinedDigits, (m) => '${m[1]} ${m[2]}');
+    s = s.replaceAll(_sonySportsTen, 'sony ten');
+    s = s.replaceAll(_sonyEnt, 'set');
+    if (s == 'sab tv' || s == 'sab') {
+      s = 'sony sab';
+    } else if (s.startsWith('sab tv ')) {
+      s = s.replaceFirst('sab tv ', 'sony sab ');
+    } else if (s.startsWith('sab ')) {
+      s = s.replaceFirst('sab ', 'sony sab ');
+    }
+    return s.replaceAll(_multiSpace, ' ').trim();
   }
 
   static String sdEquivKey(String name) {
@@ -163,6 +179,19 @@ class _ChannelMatcher {
     final joined = tokens.join(' ').trim();
     return joined.isNotEmpty ? joined : exact;
   }
+}
+
+Map<String, String> _imageHeadersFor(String url) {
+  final uri = Uri.tryParse(url);
+  final host = uri?.host.toLowerCase() ?? '';
+  if (host.contains('jio.com')) {
+    return const {'User-Agent': StreamResolver.defaultUa};
+  }
+  return const {
+    'User-Agent':
+        'Mozilla/5.0 (Linux; Android 13; TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+  };
 }
 
 String? _digitFromKeyEvent(KeyEvent event) {
@@ -213,12 +242,21 @@ String? _digitFromKeyEvent(KeyEvent event) {
 
 int? _resolveChannelIndexByNumber(List<TvChannel> channels, int number) {
   if (channels.isEmpty || number < 1) return null;
-  if (number >= 101) {
-    final idx = number - 101;
+  final exactIdx = channels.indexWhere((c) => c.channelNumber == number);
+  if (exactIdx >= 0) return exactIdx;
+  if (number < 101) {
+    final offsetIdx = channels.indexWhere((c) => c.channelNumber == 100 + number);
+    if (offsetIdx >= 0) return offsetIdx;
+  }
+  if (channels.every((c) => c.channelNumber <= 0)) {
+    if (number >= 101) {
+      final idx = number - 101;
+      return (idx >= 0 && idx < channels.length) ? idx : null;
+    }
+    final idx = number - 1;
     return (idx >= 0 && idx < channels.length) ? idx : null;
   }
-  final idx = number - 1;
-  return (idx >= 0 && idx < channels.length) ? idx : null;
+  return null;
 }
 
 class _StbChannelNumberOsd extends StatelessWidget {
@@ -666,11 +704,12 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
     final clean = raw.trim();
     if (clean.isEmpty || clean.toLowerCase() == 'null') return ('', '');
     if (clean.startsWith('//')) {
-      final httpsUrl = 'https:$clean';
+      final httpsUrl = 'https:${clean.replaceAll(' ', '%20')}';
       return (httpsUrl, httpsUrl);
     }
     if (clean.startsWith('http://') || clean.startsWith('https://')) {
-      return (clean, clean);
+      final safeUrl = clean.replaceAll(' ', '%20');
+      return (safeUrl, safeUrl);
     }
     final stripped = clean.replaceFirst(RegExp(r'^/+'), '');
     final path = stripped.startsWith('dare_images/') ? stripped : 'dare_images/images/$stripped';
@@ -981,7 +1020,8 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
         return null;
       }
 
-      final enriched = sorted.map((ch) {
+      final enriched = List<TvChannel>.generate(sorted.length, (index) {
+        final ch = sorted[index];
         final epgDonor = ch.id >= 1000000
             ? findMatch(ch, exactEpgMap, sdEpgMap, baseEpgMap)
             : null;
@@ -998,12 +1038,13 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
         }
 
         return ch.copyWith(
+          channelNumber: 101 + index,
           logo: nextLogo,
           fallbackLogo: nextFallback,
           epgChannelId: epgDonor?.id,
           epgChannelName: epgDonor?.name,
         );
-      }).toList();
+      });
 
       _EpgService.registerChannels(enriched);
 
@@ -1035,7 +1076,12 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
       final url = ch.logo.trim();
       if (url.isEmpty) continue;
       await precacheImage(
-        CachedNetworkImageProvider(url, maxWidth: 140, maxHeight: 140),
+        CachedNetworkImageProvider(
+          url,
+          headers: _imageHeadersFor(url),
+          maxWidth: 140,
+          maxHeight: 140,
+        ),
         context,
       ).catchError((_) {});
     }
@@ -1347,6 +1393,7 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
           reverseTransitionDuration: Duration.zero,
           pageBuilder: (_, __, ___) => AnasTvPlayerScreen(
             channels: channels,
+            allChannels: allChannels,
             initialIndex: safeIdx,
             isTv: widget.isTv,
           ),
@@ -1814,6 +1861,7 @@ class _AnasTvSearchScreenState extends State<AnasTvSearchScreen> {
           reverseTransitionDuration: Duration.zero,
           pageBuilder: (_, __, ___) => AnasTvPlayerScreen(
             channels: channels,
+            allChannels: widget.channels,
             initialIndex: safeIdx,
             isTv: widget.isTv,
           ),
@@ -2369,12 +2417,14 @@ class _EpgService {
 
 class AnasTvPlayerScreen extends StatefulWidget {
   final List<TvChannel> channels;
+  final List<TvChannel>? allChannels;
   final int initialIndex;
   final bool isTv;
 
   const AnasTvPlayerScreen({
     super.key,
     required this.channels,
+    this.allChannels,
     required this.initialIndex,
     required this.isTv,
   });
@@ -2393,6 +2443,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
 
   final FocusNode _playerFocus = FocusNode();
 
+  late List<TvChannel> _channels;
   late int _playingIndex;
   late int _previewIndex;
   late List<_StbProgram> _previewPrograms;
@@ -2434,8 +2485,8 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   double _panDeltaX = 0;
   double _panDeltaY = 0;
 
-  TvChannel get _playingChannel => widget.channels[_playingIndex];
-  TvChannel get _previewChannel => widget.channels[_previewIndex];
+  TvChannel get _playingChannel => _channels[_playingIndex];
+  TvChannel get _previewChannel => _channels[_previewIndex];
   MethodChannel? get _activePlayerChannel =>
       _useSecurePlatformView ? _platformChannel : _texChannel;
 
@@ -2450,7 +2501,8 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   @override
   void initState() {
     super.initState();
-    _playingIndex = widget.initialIndex.clamp(0, widget.channels.length - 1);
+    _channels = widget.channels;
+    _playingIndex = widget.initialIndex.clamp(0, _channels.length - 1);
     _previewIndex = _playingIndex;
     _previewPrograms = _EpgService.cachedFor(_previewChannel.id) ??
         _EpgService.fallback48h(_previewChannel);
@@ -2575,7 +2627,12 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   Future<void> _precachePoster(String url) async {
     if (!mounted || url.trim().isEmpty) return;
     await precacheImage(
-      CachedNetworkImageProvider(url, maxWidth: 640, maxHeight: 360),
+      CachedNetworkImageProvider(
+        url,
+        headers: _imageHeadersFor(url),
+        maxWidth: 640,
+        maxHeight: 360,
+      ),
       context,
     ).catchError((_) {});
   }
@@ -2586,7 +2643,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   void _loadPreviewAndNeighbors(int targetIdx, {bool immediateFetch = false}) {
     _epgDebounceTimer?.cancel();
     final seq = ++_lookaheadSeq;
-    final target = widget.channels[targetIdx];
+    final target = _channels[targetIdx];
 
     final cached = _EpgService.cachedFor(target.id);
     setState(() {
@@ -2624,12 +2681,12 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       if (!mounted || seq != _lookaheadSeq || _previewIndex != targetIdx) return;
 
       // Step 2: Adjacent channels (-1 and +1) -> ONLY Live (index 0) data & poster
-      if (widget.channels.length > 1) {
-        final total = widget.channels.length;
+      if (_channels.length > 1) {
+        final total = _channels.length;
         for (final delta in [-1, 1]) {
           final adjIdx = (targetIdx + delta + total) % total;
           if (adjIdx == targetIdx) continue;
-          final adjCh = widget.channels[adjIdx];
+          final adjCh = _channels[adjIdx];
           final adjList = await _EpgService.fetchOffset(adjCh, offset: 0);
           if (!mounted || seq != _lookaheadSeq || _previewIndex != targetIdx) return;
           if (adjList.isNotEmpty) {
@@ -2673,7 +2730,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
 
   Future<void> _startChannelStream(int targetIndex, {bool showBanner = false}) async {
     final reqId = ++_playRequestSeq;
-    final target = widget.channels[targetIndex];
+    final target = _channels[targetIndex];
 
     _watchdog?.cancel();
     setState(() {
@@ -2754,8 +2811,8 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   }
 
   void _stepPreviewChannel(int delta) {
-    if (widget.channels.isEmpty) return;
-    final nextIdx = (_previewIndex + delta + widget.channels.length) % widget.channels.length;
+    if (_channels.isEmpty) return;
+    final nextIdx = (_previewIndex + delta + _channels.length) % _channels.length;
     setState(() {
       _bannerVisible = true;
       _optionsMode = false;
@@ -2783,9 +2840,8 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   }
 
   void _switchChannelDirectly(int targetIndex) {
-    if (widget.channels.isEmpty) return;
-    final safeIdx = (targetIndex % widget.channels.length + widget.channels.length) %
-        widget.channels.length;
+    if (_channels.isEmpty) return;
+    final safeIdx = (targetIndex % _channels.length + _channels.length) % _channels.length;
     _startChannelStream(safeIdx, showBanner: true);
   }
 
@@ -2811,35 +2867,52 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   void _commitTypedChannel() {
     _digitCommitTimer?.cancel();
     final raw = _typedDigits;
-    if (raw.isEmpty || widget.channels.isEmpty) {
+    if (raw.isEmpty || _channels.isEmpty) {
       _clearTypedDigits();
       return;
     }
     final num = int.tryParse(raw);
-    final idx = num == null ? null : _resolveChannelIndexByNumber(widget.channels, num);
+    final idx = num == null ? null : _resolveChannelIndexByNumber(_channels, num);
     if (idx != null) {
       setState(() {
         _typedDigits = '';
         _digitOsdError = null;
       });
       _switchChannelDirectly(idx);
-    } else {
-      setState(() {
-        _typedDigits = '';
-        _digitOsdError = 'Ch $raw not found';
-      });
-      _digitCommitTimer = Timer(const Duration(milliseconds: 1100), () {
-        if (mounted) setState(() => _digitOsdError = null);
-      });
+      return;
     }
+    final globalList = widget.allChannels;
+    final globalIdx =
+        (num != null && globalList != null) ? _resolveChannelIndexByNumber(globalList, num) : null;
+    if (globalIdx != null && globalList != null) {
+      setState(() {
+        _channels = globalList;
+        _typedDigits = '';
+        _digitOsdError = null;
+      });
+      _switchChannelDirectly(globalIdx);
+      return;
+    }
+    setState(() {
+      _typedDigits = '';
+      _digitOsdError = 'Ch $raw not found';
+    });
+    _digitCommitTimer = Timer(const Duration(milliseconds: 1100), () {
+      if (mounted) setState(() => _digitOsdError = null);
+    });
   }
 
   String? get _typedPreviewChannelName {
     final num = int.tryParse(_typedDigits);
     if (num == null) return null;
-    final idx = _resolveChannelIndexByNumber(widget.channels, num);
-    if (idx == null) return null;
-    return widget.channels[idx].name;
+    final idx = _resolveChannelIndexByNumber(_channels, num);
+    if (idx != null) return _channels[idx].name;
+    final globalList = widget.allChannels;
+    if (globalList != null) {
+      final globalIdx = _resolveChannelIndexByNumber(globalList, num);
+      if (globalIdx != null) return globalList[globalIdx].name;
+    }
+    return null;
   }
 
   void _triggerLeft() {
@@ -3080,7 +3153,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
         (key == LogicalKeyboardKey.select ||
             key == LogicalKeyboardKey.enter ||
             key == LogicalKeyboardKey.numpadEnter)) {
-      _showBanner(openOptions: true);
+      _showBanner(resetToPlaying: true, openOptions: true);
       return KeyEventResult.handled;
     }
 
@@ -3128,11 +3201,11 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     }
 
     if (_isMenuKey(key) && event is KeyDownEvent) {
-      if (_bannerVisible && _optionsMode) {
+      if (_bannerVisible && _optionsMode && _previewIndex == _playingIndex) {
         setState(() => _optionsMode = false);
         _scheduleBannerAutoHide();
       } else {
-        _showBanner(openOptions: true);
+        _showBanner(resetToPlaying: true, openOptions: true);
       }
       return KeyEventResult.handled;
     }
@@ -3183,12 +3256,14 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   }
 
   String _clockHeaderText() {
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final dayName = days[(_now.weekday - 1).clamp(0, 6)];
     final h24 = _now.hour;
     final h12 = h24 % 12 == 0 ? 12 : h24 % 12;
     final min = _now.minute.toString().padLeft(2, '0');
     final ampm = h24 >= 12 ? 'pm' : 'am';
-    return '$h12:$min $ampm | ${months[_now.month - 1]} ${_now.day}';
+    return '$dayName, ${months[_now.month - 1]} ${_now.day}  |  $h12:$min $ampm';
   }
 
   BoxFit get _videoBoxFit {
@@ -3209,11 +3284,19 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     final size = MediaQuery.sizeOf(context);
     final compactLayout = !widget.isTv || size.width < 720 || size.height < 500;
     final narrowCompact = size.width < 540;
-    final posterWidth = narrowCompact ? 156.0 : (compactLayout ? 250.0 : 340.0);
-    final posterHeight = narrowCompact ? 96.0 : (compactLayout ? 150.0 : 192.0);
-    final stripTopOffset = narrowCompact ? 12.0 : (compactLayout ? 24.0 : 44.0);
+    final posterWidth = narrowCompact ? 148.0 : (compactLayout ? 250.0 : 340.0);
+    final posterHeight = narrowCompact ? 104.0 : (compactLayout ? 150.0 : 192.0);
+    final titleRowHeight = narrowCompact ? 30.0 : (compactLayout ? 32.0 : 36.0);
+    final middleSlotHeight = narrowCompact ? 76.0 : (compactLayout ? 80.0 : 92.0);
+    final topPadInsideStrip = narrowCompact ? 4.0 : (compactLayout ? 5.0 : 6.0);
+    final rowGap = narrowCompact ? 4.0 : (compactLayout ? 6.0 : 8.0);
+    final rightContentHeight =
+        topPadInsideStrip + titleRowHeight + rowGap + middleSlotHeight + rowGap + 3.0;
+    final stripTopOffset = math.max(0.0, posterHeight - rightContentHeight);
     final progKey = ValueKey('${previewCh.id}_$_programIndex');
     final posterKey = ValueKey('poster_${previewCh.id}_$_programIndex');
+    final displayChannelNumber =
+        previewCh.channelNumber > 0 ? previewCh.channelNumber : (_previewIndex + 101);
 
     return PopScope(
       canPop: false,
@@ -3245,7 +3328,9 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
               }
             },
             onDoubleTap: (!widget.isTv && _openPicker == null) ? _triggerOk : null,
-            onLongPress: !widget.isTv ? () => _showBanner(openOptions: true) : null,
+            onLongPress: !widget.isTv
+                ? () => _showBanner(resetToPlaying: true, openOptions: true)
+                : null,
             onPanStart: (!widget.isTv && _openPicker == null)
                 ? (_) {
                     _panDeltaX = 0;
@@ -3373,7 +3458,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                         compactLayout ? 14 : 26,
                         12,
                       ),
-                      color: Colors.black.withValues(alpha: 0.14),
+                      color: Colors.transparent,
                       child: SafeArea(
                         bottom: false,
                         child: Row(
@@ -3395,12 +3480,12 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                             ],
                             Text(
                               _clockHeaderText(),
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontFamily: 'Anton',
                                 color: Colors.white,
-                                fontSize: 15,
+                                fontSize: compactLayout ? 21 : 26,
                                 fontWeight: FontWeight.w400,
-                                letterSpacing: 0.6,
+                                letterSpacing: 0.55,
                                 shadows: _textShadows,
                               ),
                             ),
@@ -3508,122 +3593,139 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                                 SizedBox(width: compactLayout ? 14 : 22),
                                 Expanded(
                                   child: RepaintBoundary(
-                                    child: Padding(
-                                      padding: EdgeInsets.only(top: stripTopOffset + (compactLayout ? 8 : 10)),
-                                      child: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Row(
-                                            crossAxisAlignment: CrossAxisAlignment.center,
-                                            children: [
-                                              Text(
-                                                '${_previewIndex + 101}',
-                                                style: TextStyle(
-                                                  fontFamily: 'Anton',
-                                                  color: Colors.white,
-                                                  fontSize: compactLayout ? 22 : 27,
-                                                  height: 1.08,
-                                                  fontWeight: FontWeight.w400,
-                                                  letterSpacing: 0.8,
-                                                  shadows: _textShadows,
-                                                ),
-                                              ),
-                                              const SizedBox(width: 12),
-                                              Expanded(
-                                                child: Text(
-                                                  previewCh.name,
-                                                  maxLines: 1,
-                                                  overflow: TextOverflow.ellipsis,
-                                                  style: TextStyle(
-                                                    fontFamily: 'Anton',
-                                                    color: Colors.white,
-                                                    fontSize: compactLayout ? 21 : 26,
-                                                    height: 1.08,
-                                                    fontWeight: FontWeight.w400,
-                                                    letterSpacing: 0.55,
-                                                    shadows: _textShadows,
-                                                  ),
-                                                ),
-                                              ),
-                                              const SizedBox(width: 8),
-                                              InkWell(
-                                                onTap: () => _showBanner(openOptions: !_optionsMode),
-                                                borderRadius: BorderRadius.circular(6),
-                                                hoverColor: Colors.white.withValues(alpha: 0.16),
-                                                focusColor: Colors.white.withValues(alpha: 0.22),
-                                                highlightColor: Colors.white.withValues(alpha: 0.12),
-                                                child: Container(
-                                                  width: compactLayout ? 32 : 36,
-                                                  height: compactLayout ? 32 : 36,
-                                                  alignment: Alignment.center,
-                                                  decoration: BoxDecoration(
-                                                    color: _optionsMode
-                                                        ? Colors.white.withValues(alpha: 0.22)
-                                                        : Colors.transparent,
-                                                    borderRadius: BorderRadius.circular(6),
-                                                  ),
-                                                  child: Icon(
-                                                    Icons.tune_rounded,
-                                                    size: compactLayout ? 19 : 21,
-                                                    color: Colors.white,
-                                                    shadows: _textShadows,
-                                                  ),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                          SizedBox(height: compactLayout ? 7 : 10),
-                                          _optionsMode
-                                              ? _buildStbOptionsBar()
-                                              : ClipRect(
-                                                  child: AnimatedSwitcher(
-                                                    duration: const Duration(milliseconds: 180),
-                                                    switchInCurve: Curves.easeOutCubic,
-                                                    switchOutCurve: Curves.easeInCubic,
-                                                    layoutBuilder: (currentChild, previousChildren) => Stack(
-                                                      alignment: Alignment.topLeft,
-                                                      children: [
-                                                        ...previousChildren,
-                                                        if (currentChild != null) currentChild,
-                                                      ],
+                                    child: SizedBox(
+                                      height: rightContentHeight,
+                                      child: Padding(
+                                        padding: EdgeInsets.only(top: topPadInsideStrip),
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            SizedBox(
+                                              height: titleRowHeight,
+                                              child: Row(
+                                                crossAxisAlignment: CrossAxisAlignment.center,
+                                                children: [
+                                                  Text(
+                                                    '$displayChannelNumber',
+                                                    style: TextStyle(
+                                                      fontFamily: 'Anton',
+                                                      color: Colors.white,
+                                                      fontSize: compactLayout ? 22 : 27,
+                                                      height: 1.08,
+                                                      fontWeight: FontWeight.w400,
+                                                      letterSpacing: 0.8,
+                                                      shadows: _textShadows,
                                                     ),
-                                                    transitionBuilder: (child, animation) {
-                                                      final isIncoming = child.key == progKey;
-                                                      final beginOffset = isIncoming
-                                                          ? Offset(0, _programAnimDir >= 0 ? 0.35 : -0.35)
-                                                          : Offset(0, _programAnimDir >= 0 ? -0.30 : 0.30);
-                                                      return FadeTransition(
-                                                        opacity: animation,
-                                                        child: SlideTransition(
-                                                          position: Tween<Offset>(
-                                                            begin: beginOffset,
-                                                            end: Offset.zero,
-                                                          ).animate(animation),
-                                                          child: child,
-                                                        ),
-                                                      );
-                                                    },
-                                                    child: KeyedSubtree(
-                                                      key: progKey,
-                                                      child: _buildStbProgramDetails(
-                                                        activeProgram,
-                                                        compactLayout: compactLayout,
+                                                  ),
+                                                  const SizedBox(width: 12),
+                                                  Expanded(
+                                                    child: Text(
+                                                      previewCh.name,
+                                                      maxLines: 1,
+                                                      overflow: TextOverflow.ellipsis,
+                                                      style: TextStyle(
+                                                        fontFamily: 'Anton',
+                                                        color: Colors.white,
+                                                        fontSize: compactLayout ? 21 : 26,
+                                                        height: 1.08,
+                                                        fontWeight: FontWeight.w400,
+                                                        letterSpacing: 0.55,
+                                                        shadows: _textShadows,
                                                       ),
                                                     ),
                                                   ),
-                                                ),
-                                          SizedBox(height: compactLayout ? 8 : 10),
-                                          ClipRRect(
-                                            borderRadius: BorderRadius.circular(2),
-                                            child: LinearProgressIndicator(
-                                              minHeight: 3,
-                                              value: activeProgram.isLiveNow ? activeProgram.progress : 0.0,
-                                              backgroundColor: Colors.white.withValues(alpha: 0.25),
-                                              valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFE53935)),
+                                                  if (_previewIndex == _playingIndex) ...[
+                                                    const SizedBox(width: 8),
+                                                    InkWell(
+                                                      onTap: () => _showBanner(openOptions: !_optionsMode),
+                                                      borderRadius: BorderRadius.circular(6),
+                                                      hoverColor: Colors.white.withValues(alpha: 0.16),
+                                                      focusColor: Colors.white.withValues(alpha: 0.22),
+                                                      highlightColor: Colors.white.withValues(alpha: 0.12),
+                                                      child: Container(
+                                                        width: compactLayout ? 30 : 34,
+                                                        height: compactLayout ? 30 : 34,
+                                                        alignment: Alignment.center,
+                                                        decoration: BoxDecoration(
+                                                          color: _optionsMode
+                                                              ? Colors.white.withValues(alpha: 0.22)
+                                                              : Colors.transparent,
+                                                          borderRadius: BorderRadius.circular(6),
+                                                        ),
+                                                        child: Icon(
+                                                          Icons.tune_rounded,
+                                                          size: compactLayout ? 19 : 21,
+                                                          color: Colors.white,
+                                                          shadows: _textShadows,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ],
+                                              ),
                                             ),
-                                          ),
-                                        ],
+                                            SizedBox(height: rowGap),
+                                            SizedBox(
+                                              height: middleSlotHeight,
+                                              width: double.infinity,
+                                              child: _optionsMode
+                                                  ? Align(
+                                                      alignment: Alignment.centerLeft,
+                                                      child: _buildStbOptionsBar(),
+                                                    )
+                                                  : Align(
+                                                      alignment: Alignment.topLeft,
+                                                      child: ClipRect(
+                                                        child: AnimatedSwitcher(
+                                                          duration: const Duration(milliseconds: 180),
+                                                          switchInCurve: Curves.easeOutCubic,
+                                                          switchOutCurve: Curves.easeInCubic,
+                                                          layoutBuilder: (currentChild, previousChildren) => Stack(
+                                                            alignment: Alignment.topLeft,
+                                                            children: [
+                                                              ...previousChildren,
+                                                              if (currentChild != null) currentChild,
+                                                            ],
+                                                          ),
+                                                          transitionBuilder: (child, animation) {
+                                                            final isIncoming = child.key == progKey;
+                                                            final beginOffset = isIncoming
+                                                                ? Offset(0, _programAnimDir >= 0 ? 0.35 : -0.35)
+                                                                : Offset(0, _programAnimDir >= 0 ? -0.30 : 0.30);
+                                                            return FadeTransition(
+                                                              opacity: animation,
+                                                              child: SlideTransition(
+                                                                position: Tween<Offset>(
+                                                                  begin: beginOffset,
+                                                                  end: Offset.zero,
+                                                                ).animate(animation),
+                                                                child: child,
+                                                              ),
+                                                            );
+                                                          },
+                                                          child: KeyedSubtree(
+                                                            key: progKey,
+                                                            child: _buildStbProgramDetails(
+                                                              activeProgram,
+                                                              compactLayout: compactLayout,
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ),
+                                            ),
+                                            const Spacer(),
+                                            ClipRRect(
+                                              borderRadius: BorderRadius.circular(2),
+                                              child: LinearProgressIndicator(
+                                                minHeight: 3,
+                                                value: activeProgram.isLiveNow ? activeProgram.progress : 0.0,
+                                                backgroundColor: Colors.white.withValues(alpha: 0.25),
+                                                valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFE53935)),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
                                       ),
                                     ),
                                   ),
@@ -3669,12 +3771,13 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
             fontFamily: 'Anton',
             color: Colors.white,
             fontSize: compactLayout ? 16 : 19,
+            height: 1.15,
             fontWeight: FontWeight.w400,
             letterSpacing: 0.45,
             shadows: _textShadows,
           ),
         ),
-        SizedBox(height: compactLayout ? 5 : 6),
+        SizedBox(height: compactLayout ? 4 : 5),
         Text(
           program.timeLabel,
           maxLines: 1,
@@ -3683,12 +3786,13 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
             fontFamily: 'Anton',
             color: const Color(0xFFF0F4FA),
             fontSize: compactLayout ? 13 : 14.5,
+            height: 1.15,
             fontWeight: FontWeight.w400,
             letterSpacing: 0.45,
             shadows: _textShadows,
           ),
         ),
-        SizedBox(height: compactLayout ? 6 : 7),
+        SizedBox(height: compactLayout ? 4 : 5),
         Text(
           program.description,
           maxLines: 2,
@@ -3696,7 +3800,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
           style: TextStyle(
             color: const Color(0xFFD6DCE8),
             fontSize: compactLayout ? 11 : 12.5,
-            height: 1.35,
+            height: 1.30,
             shadows: _textShadows,
           ),
         ),
@@ -3942,25 +4046,29 @@ class _ProgramPosterState extends State<_ProgramPoster> {
     }
     final url = urls[_attempt];
 
-    return CachedNetworkImage(
-      imageUrl: url,
-      fit: BoxFit.fill,
-      width: double.infinity,
-      height: double.infinity,
-      memCacheWidth: 640,
-      memCacheHeight: 360,
-      fadeInDuration: Duration.zero,
-      fadeOutDuration: Duration.zero,
-      useOldImageOnUrlChange: true,
-      placeholder: (_, __) => _placeholder(),
-      errorWidget: (_, __, ___) {
-        if (_attempt + 1 < urls.length) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) setState(() => _attempt++);
-          });
-        }
-        return _placeholder();
-      },
+    return ColoredBox(
+      color: Colors.white,
+      child: CachedNetworkImage(
+        imageUrl: url,
+        httpHeaders: _imageHeadersFor(url),
+        fit: BoxFit.fill,
+        width: double.infinity,
+        height: double.infinity,
+        memCacheWidth: 640,
+        memCacheHeight: 360,
+        fadeInDuration: Duration.zero,
+        fadeOutDuration: Duration.zero,
+        useOldImageOnUrlChange: true,
+        placeholder: (_, __) => _placeholder(),
+        errorWidget: (_, __, ___) {
+          if (_attempt + 1 < urls.length) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) setState(() => _attempt++);
+            });
+          }
+          return _placeholder();
+        },
+      ),
     );
   }
 }
@@ -4065,7 +4173,9 @@ class _ChannelCardState extends State<_ChannelCard> {
                       height: logoSize,
                       child: Container(
                         decoration: BoxDecoration(
-                          color: Colors.white,
+                          color: widget.channel.logo.toLowerCase().contains('white')
+                              ? const Color(0xFF151924)
+                              : Colors.white,
                           shape: BoxShape.circle,
                           border: Border.all(
                             color: showTvFocus ? Colors.white : const Color(0xFFD94B0A),
@@ -4247,7 +4357,7 @@ class _ChannelLogoState extends State<_ChannelLogo> {
     }
     return CachedNetworkImage(
       imageUrl: url,
-      httpHeaders: const {'User-Agent': StreamResolver.defaultUa},
+      httpHeaders: _imageHeadersFor(url),
       fit: BoxFit.contain,
       memCacheWidth: 140,
       memCacheHeight: 140,
