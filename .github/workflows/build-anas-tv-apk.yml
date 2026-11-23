@@ -85,10 +85,19 @@ jobs:
           permissions = [
               '    <uses-permission android:name="android.permission.INTERNET" />',
               '    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />',
+              '    <uses-feature android:name="android.software.leanback" android:required="false" />',
+              '    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />',
           ]
           for permission in permissions:
               if permission not in s:
                   s = s.replace('<application', permission + '\n    <application', 1)
+          if 'LEANBACK_LAUNCHER' not in s:
+              s = re.sub(
+                  r'(<category\s+android:name="android\.intent\.category\.LAUNCHER"\s*/>)',
+                  r'\1\n                <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>',
+                  s,
+                  count=1
+              )
           if 'usesCleartextTraffic' not in s:
               s = re.sub(r'<application\b', '<application\n        android:usesCleartextTraffic="true"', s, count=1)
           s = re.sub(r'android:label="[^"]+"', 'android:label="AnasTV"', s, count=1)
