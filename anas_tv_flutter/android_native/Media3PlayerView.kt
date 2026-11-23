@@ -6,7 +6,9 @@ import android.media.MediaDrm
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
+import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.annotation.OptIn
 import androidx.media3.common.C
@@ -14,7 +16,6 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -43,13 +44,12 @@ class Media3PlayerView(
 
     init {
         root.setBackgroundColor(Color.BLACK)
-        root.isFocusable = false
-        root.isFocusableInTouchMode = false
+        root.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
 
-        // Flutter owns TV D-Pad & Mobile touch controls so navigation never gets trapped.
-        playerView.useController = false
-        playerView.isFocusable = false
-        playerView.isFocusableInTouchMode = false
+        playerView.useController = true
+        playerView.isFocusable = true
+        playerView.isFocusableInTouchMode = true
+        playerView.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
         playerView.keepScreenOn = true
         root.addView(
             playerView,
@@ -74,47 +74,56 @@ class Media3PlayerView(
                 }
                 "pause" -> {
                     player?.playWhenReady = false
-                    result.success(false)
+                    result.success(null)
                 }
                 "resume" -> {
                     player?.playWhenReady = true
-                    result.success(true)
-                }
-                "togglePlayPause" -> {
-                    val p = player
-                    if (p != null) {
-                        val next = !p.playWhenReady
-                        p.playWhenReady = next
-                        result.success(next)
-                    } else {
-                        result.success(false)
-                    }
-                }
-                "setMuted" -> {
-                    val muted = (call.arguments as? Boolean) ?: false
-                    player?.volume = if (muted) 0f else 1f
-                    result.success(muted)
-                }
-                "getVideoTracks" -> {
-                    result.success(extractVideoTracks())
-                }
-                "selectVideoTrack" -> {
-                    @Suppress("UNCHECKED_CAST")
-                    val args = call.arguments as? Map<String, Any?> ?: emptyMap()
-                    val groupIndex = (args["groupIndex"] as? Number)?.toInt() ?: -1
-                    val trackIndex = (args["trackIndex"] as? Number)?.toInt() ?: -1
-                    selectVideoTrack(groupIndex, trackIndex)
                     result.success(null)
                 }
-                "stop" -> {
-                    playerView.player = null
-                    player?.release()
-                    player = null
+                "dispatchKey" -> {
+                    val keyCode = (call.arguments as? Number)?.toInt() ?: 0
+                    val handled = dispatchTvKey(keyCode)
+                    result.success(handled)
+                }
+                "isControllerVisible" -> {
+                    result.success(isControllerVisible())
+                }
+                "hideController" -> {
+                    hideNativeController()
                     result.success(null)
                 }
                 else -> result.notImplemented()
             }
         }
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun isControllerVisible(): Boolean = playerView.isControllerFullyVisible
+
+    @OptIn(UnstableApi::class)
+    private fun hideNativeController() {
+        playerView.hideController()
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun dispatchTvKey(keyCode: Int): Boolean {
+        if (keyCode <= 0) return false
+        playerView.requestFocus()
+        if (!playerView.isControllerFullyVisible && keyCode != KeyEvent.KEYCODE_BACK) {
+            playerView.showController()
+            if (keyCode == KeyEvent.KEYCODE_DPAD_UP ||
+                keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
+                keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
+                keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+            ) {
+                return true
+            }
+        }
+        val down = KeyEvent(KeyEvent.ACTION_DOWN, keyCode)
+        val up = KeyEvent(KeyEvent.ACTION_UP, keyCode)
+        val handledDown = playerView.dispatchKeyEvent(down)
+        val handledUp = playerView.dispatchKeyEvent(up)
+        return handledDown || handledUp
     }
 
     @OptIn(UnstableApi::class)
@@ -213,10 +222,6 @@ class Media3PlayerView(
                     sendState(state)
                 }
 
-                override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    mainHandler.post { channel.invokeMethod("onIsPlayingChanged", isPlaying) }
-                }
-
                 override fun onRenderedFirstFrame() {
                     sendState("ready")
                 }
@@ -225,65 +230,10 @@ class Media3PlayerView(
             exoPlayer.setMediaItem(itemBuilder.build())
             exoPlayer.prepare()
             exoPlayer.playWhenReady = true
+            mainHandler.post { playerView.requestFocus() }
         } catch (error: Exception) {
             sendError("Player setup error: ${error.message ?: error.javaClass.simpleName}")
         }
-    }
-
-    @OptIn(UnstableApi::class)
-    private fun extractVideoTracks(): List<Map<String, Any>> {
-        val exoPlayer = player ?: return emptyList()
-        val list = ArrayList<Map<String, Any>>()
-        val groups = exoPlayer.currentTracks.groups
-        for (gIdx in 0 until groups.size) {
-            val group = groups[gIdx]
-            if (group.type != C.TRACK_TYPE_VIDEO || !group.isSupported) continue
-            for (tIdx in 0 until group.length) {
-                if (!group.isTrackSupported(tIdx)) continue
-                val fmt = group.getTrackFormat(tIdx)
-                val height = fmt.height
-                val bitrate = fmt.bitrate
-                val label = when {
-                    height > 0 && bitrate > 0 -> "${height}p (${bitrate / 1000} kbps)"
-                    height > 0 -> "${height}p"
-                    bitrate > 0 -> "${bitrate / 1000} kbps"
-                    else -> "Track ${tIdx + 1}"
-                }
-                list.add(
-                    mapOf(
-                        "groupIndex" to gIdx,
-                        "trackIndex" to tIdx,
-                        "height" to height,
-                        "bitrate" to bitrate,
-                        "label" to label,
-                        "selected" to group.isTrackSelected(tIdx),
-                    )
-                )
-            }
-        }
-        return list.sortedByDescending { (it["height"] as? Int) ?: 0 }
-    }
-
-    @OptIn(UnstableApi::class)
-    private fun selectVideoTrack(groupIndex: Int, trackIndex: Int) {
-        val exoPlayer = player ?: return
-        if (groupIndex < 0 || trackIndex < 0) {
-            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-                .buildUpon()
-                .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
-                .setForceHighestSupportedBitrate(true)
-                .build()
-            return
-        }
-        val groups = exoPlayer.currentTracks.groups
-        if (groupIndex >= groups.size) return
-        val group = groups[groupIndex]
-        if (trackIndex >= group.length) return
-        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-            .buildUpon()
-            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
-            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, trackIndex))
-            .build()
     }
 
     private fun isClearKeySupported(): Boolean =
