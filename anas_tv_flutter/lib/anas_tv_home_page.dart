@@ -7,26 +7,14 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
-class AnasTvApp extends StatefulWidget {
+class AnasTvApp extends StatelessWidget {
   const AnasTvApp({super.key});
-  @override
-  State<AnasTvApp> createState() => _AnasTvAppState();
-}
-
-class _AnasTvAppState extends State<AnasTvApp> {
-  ThemeMode mode = ThemeMode.dark;
 
   @override
   Widget build(BuildContext context) => MaterialApp(
         title: 'AnasTV',
         debugShowCheckedModeBanner: false,
-        themeMode: mode,
-        theme: ThemeData(
-          useMaterial3: true,
-          brightness: Brightness.light,
-          colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFE65312)),
-          scaffoldBackgroundColor: const Color(0xFFF5F7FB),
-        ),
+        themeMode: ThemeMode.dark,
         darkTheme: ThemeData(
           useMaterial3: true,
           brightness: Brightness.dark,
@@ -36,12 +24,7 @@ class _AnasTvAppState extends State<AnasTvApp> {
           ),
           scaffoldBackgroundColor: const Color(0xFF050505),
         ),
-        home: AnasTvHomePage(
-          isDark: mode == ThemeMode.dark,
-          onToggleTheme: () => setState(() {
-            mode = mode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
-          }),
-        ),
+        home: const AnasTvHomePage(),
       );
 }
 
@@ -67,14 +50,7 @@ class TvChannel {
 }
 
 class AnasTvHomePage extends StatefulWidget {
-  final bool isDark;
-  final VoidCallback onToggleTheme;
-
-  const AnasTvHomePage({
-    super.key,
-    required this.isDark,
-    required this.onToggleTheme,
-  });
+  const AnasTvHomePage({super.key});
 
   @override
   State<AnasTvHomePage> createState() => _AnasTvHomePageState();
@@ -97,25 +73,6 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
     18: 'Shopping',
   };
 
-  static const languages = <int, String>{
-    0: 'All Languages',
-    1: 'Hindi',
-    6: 'English',
-    8: 'Tamil',
-    11: 'Telugu',
-    2: 'Marathi',
-    5: 'Bengali',
-    9: 'Gujarati',
-    13: 'Kannada',
-    7: 'Malayalam',
-    3: 'Punjabi',
-    10: 'Odia',
-    12: 'Bhojpuri',
-    4: 'Urdu',
-    14: 'Assamese',
-    15: 'Nepali',
-  };
-
   static const headers = {
     'User-Agent': 'JioTV',
     'x-api-key': 'l7xx75e822925f184370b2e25170c5d5820a',
@@ -127,25 +84,22 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
     'devicetype': 'phone',
   };
 
-  static const extraUrl = 'https://api.npoint.io/9db02feba76eb297fc65?v=1794981838621';
+  static const extraUrl = 'https://api.npoint.io/9db02feba76eb297fc65';
   static const defaultUa =
       'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36';
 
-  final searchController = TextEditingController();
-  final searchFocus = FocusNode();
   final List<String> _debugErrors = [];
 
   List<TvChannel> allChannels = [];
-  bool loading = true, searchOpen = false, hdOnly = false, resolving = false;
+  List<String> filterTabs = ['ALL'];
+  String selectedTab = 'ALL';
+  bool loading = true, resolving = false;
   String? error;
-  String query = '';
-  int categoryId = 0, languageId = 0;
 
   int _int(dynamic value, [int fallback = 0]) =>
       int.tryParse(value?.toString() ?? '') ?? fallback;
 
   String _category(int id) => categories[id] ?? 'General';
-  String _language(int id) => languages[id] ?? 'Regional';
 
   (String, String) _logoUrls(String raw) {
     final clean = raw.trim().replaceFirst(RegExp(r'^/+'), '');
@@ -162,13 +116,6 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
   void initState() {
     super.initState();
     _loadChannels();
-  }
-
-  @override
-  void dispose() {
-    searchController.dispose();
-    searchFocus.dispose();
-    super.dispose();
   }
 
   Future<List<TvChannel>> _fetchJio() async {
@@ -207,7 +154,7 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
                 categoryId: c,
                 category: _category(c),
                 languageId: l,
-                language: _language(l),
+                language: '',
                 hd: j['isHD'] == true,
                 order: _int(j['channel_order'], 999999),
                 raw: j,
@@ -223,7 +170,7 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
     return [];
   }
 
-  Future<List<TvChannel>> _fetchExtra() async {
+  Future<(List<TvChannel>, List<String>)> _fetchExtra() async {
     try {
       final response = await http.get(
         Uri.parse(extraUrl),
@@ -231,7 +178,7 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
       ).timeout(const Duration(seconds: 18));
       if (response.statusCode != 200 || response.body.trim().isEmpty) {
         _debugErrors.add('npoint API HTTP ${response.statusCode}');
-        return [];
+        return (<TvChannel>[], <String>[]);
       }
       final decoded = jsonDecode(response.body);
       List rows = [];
@@ -247,7 +194,11 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
           rows = decoded.values.firstWhere((v) => v is List, orElse: () => []) as List;
         }
       }
+
       final result = <TvChannel>[];
+      final seenGenres = <String>{};
+      final apiGenres = <String>[];
+
       for (var i = 0; i < rows.length; i++) {
         if (rows[i] is! Map) continue;
         final j = Map<String, dynamic>.from(rows[i]);
@@ -261,63 +212,49 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
 
         final name = pick(['channel_name', 'channelName', 'name', 'title', 'tvg_name']);
         final stream = pick([
+          'ready_to_use_link',
           'channel_url',
           'stream_url',
           'mpd_url',
           'm3u8_url',
           'url',
-          'ready_to_use_link',
         ]);
         if (name.isEmpty && stream.isEmpty) continue;
+
         final id = _int(pick(['channel_id', 'channelId', 'id', 'chid', 'channelNo']), 1000000 + i);
         final logos = _logoUrls(pick(['channel_logo', 'logoUrl', 'logo', 'tvg_logo', 'image', 'thumbnail']));
         final rawCategory = pick(['channel_genre', 'cat', 'categoryName', 'category', 'genre', 'group_title']);
         final c = _int(pick(['channelCategoryId', 'category_id', 'categoryId']));
-        final rawLanguage = pick(['languageName', 'language', 'lang']);
         final l = _int(pick(['channelLanguageId', 'language_id', 'languageId']));
-        final normalizedLanguage = rawLanguage.toLowerCase() == 'malyalam' ? 'Malayalam' : rawLanguage;
-        final inferredCategory = c != 0 ? c : _inferCategory('$rawCategory $name');
-        final inferredLanguage = l != 0 ? l : _inferLanguage(normalizedLanguage);
+        final rawLanguage = pick(['languageName', 'language', 'lang']);
+
+        final cleanGenre = rawCategory.trim();
+        if (cleanGenre.isNotEmpty && cleanGenre.toLowerCase() != 'unknown') {
+          final key = cleanGenre.toLowerCase();
+          if (seenGenres.add(key)) {
+            apiGenres.add(cleanGenre);
+          }
+        }
 
         result.add(TvChannel(
           id: id,
           name: name.isEmpty ? 'Channel $id' : name,
           logo: logos.$1,
           fallbackLogo: logos.$2,
-          categoryId: inferredCategory,
-          category: rawCategory.isNotEmpty ? rawCategory : _category(inferredCategory),
-          languageId: inferredLanguage,
-          language: normalizedLanguage.isNotEmpty ? normalizedLanguage : _language(inferredLanguage),
+          categoryId: c,
+          category: cleanGenre,
+          languageId: l,
+          language: rawLanguage,
           hd: j['isHD'] == true || j['isHd'] == true || name.toUpperCase().contains('HD'),
           order: _int(pick(['channel_order', 'order']), 10000 + i),
           raw: j,
         ));
       }
-      return result;
+      return (result, apiGenres);
     } catch (e) {
       _debugErrors.add('npoint API error: $e');
-      return [];
+      return (<TvChannel>[], <String>[]);
     }
-  }
-
-  int _inferCategory(String value) {
-    final s = value.toLowerCase();
-    if (s.contains('movie') || s.contains('cinema')) return 6;
-    if (s.contains('sport') || s.contains('cricket')) return 8;
-    if (s.contains('news')) return 12;
-    if (s.contains('kid') || s.contains('cartoon') || s.contains('nick')) return 7;
-    if (s.contains('music') || s.contains('mtv')) return 13;
-    if (s.contains('discovery') || s.contains('history') || s.contains('nat geo')) return 10;
-    if (s.contains('bhakti') || s.contains('sanskar') || s.contains('aastha')) return 15;
-    return value.trim().isEmpty ? 0 : 5;
-  }
-
-  int _inferLanguage(String value) {
-    final s = value.toLowerCase();
-    for (final entry in languages.entries) {
-      if (entry.key != 0 && s.contains(entry.value.toLowerCase())) return entry.key;
-    }
-    return 0;
   }
 
   Future<void> _loadChannels() async {
@@ -327,41 +264,58 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
       _debugErrors.clear();
     });
     try {
-      final results = await Future.wait([_fetchJio(), _fetchExtra()]);
+      final jioFuture = _fetchJio();
+      final extraFuture = _fetchExtra();
+      final jioList = await jioFuture;
+      final extraResult = await extraFuture;
+      final extraList = extraResult.$1;
+      final apiGenres = extraResult.$2;
+
       final merged = <int, TvChannel>{};
-      for (final channel in results[0]) {
+      for (final channel in jioList) {
         merged.putIfAbsent(channel.id, () => channel);
       }
-      for (final extra in results[1]) {
+      for (final extra in extraList) {
         final old = merged[extra.id];
         if (old == null) {
           merged[extra.id] = extra;
         } else {
+          // Preserve exact genre/category coming from npoint API
           merged[extra.id] = TvChannel(
             id: old.id,
             name: old.name.isNotEmpty ? old.name : extra.name,
             logo: old.logo.isNotEmpty ? old.logo : extra.logo,
             fallbackLogo: old.fallbackLogo.isNotEmpty ? old.fallbackLogo : extra.fallbackLogo,
-            categoryId: old.categoryId != 0 ? old.categoryId : extra.categoryId,
-            category: old.categoryId != 0 ? old.category : extra.category,
+            categoryId: extra.categoryId != 0 ? extra.categoryId : old.categoryId,
+            category: extra.category.isNotEmpty ? extra.category : old.category,
             languageId: old.languageId != 0 ? old.languageId : extra.languageId,
-            language: old.languageId != 0 ? old.language : extra.language,
+            language: extra.language.isNotEmpty ? extra.language : old.language,
             hd: old.hd || extra.hd,
             order: old.order,
             raw: extra.raw,
           );
         }
       }
+
       final sorted = merged.values.toList()
         ..sort((a, b) {
           final order = a.order.compareTo(b.order);
           return order != 0 ? order : a.name.toLowerCase().compareTo(b.name.toLowerCase());
         });
+
       if (sorted.isEmpty) {
         throw Exception(_debugErrors.isEmpty ? 'Both APIs returned zero channels.' : _debugErrors.join('\n'));
       }
+
+      final tabs = <String>['ALL', ...apiGenres];
       if (!mounted) return;
-      setState(() => allChannels = sorted);
+      setState(() {
+        allChannels = sorted;
+        filterTabs = tabs;
+        if (!tabs.any((t) => t.toLowerCase() == selectedTab.toLowerCase())) {
+          selectedTab = 'ALL';
+        }
+      });
     } catch (e) {
       if (mounted) setState(() => error = e.toString().replaceFirst('Exception: ', ''));
     } finally {
@@ -370,41 +324,12 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
   }
 
   List<TvChannel> get _filteredChannels {
-    final q = query.trim().toLowerCase();
+    if (selectedTab.toUpperCase() == 'ALL') return allChannels;
+    final target = selectedTab.trim().toLowerCase();
     return allChannels
-        .where((c) =>
-            (categoryId == 0 || c.categoryId == categoryId) &&
-            (languageId == 0 || c.languageId == languageId) &&
-            (!hdOnly || c.hd) &&
-            (q.isEmpty ||
-                c.name.toLowerCase().contains(q) ||
-                c.category.toLowerCase().contains(q) ||
-                c.language.toLowerCase().contains(q) ||
-                c.id.toString() == q))
+        .where((c) => c.category.trim().toLowerCase() == target)
         .toList();
   }
-
-  void _toggleSearch() {
-    setState(() {
-      searchOpen = !searchOpen;
-      if (!searchOpen) {
-        searchController.clear();
-        query = '';
-      } else {
-        Future.delayed(const Duration(milliseconds: 80), () {
-          if (mounted) searchFocus.requestFocus();
-        });
-      }
-    });
-  }
-
-  void _resetFilters() => setState(() {
-        categoryId = 0;
-        languageId = 0;
-        hdOnly = false;
-        query = '';
-        searchController.clear();
-      });
 
   Future<void> _openChannel(TvChannel channel) async {
     if (resolving) return;
@@ -670,128 +595,38 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
   @override
   Widget build(BuildContext context) {
     final filtered = _filteredChannels;
-    final dark = widget.isDark;
-    final bg = dark ? const Color(0xFF050505) : const Color(0xFFF5F7FB);
-    final textColor = dark ? Colors.white : const Color(0xFF121826);
-
     return Scaffold(
-      backgroundColor: bg,
+      backgroundColor: const Color(0xFF050505),
       body: SafeArea(
         child: Stack(
           children: [
             Column(
               children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 10, 8, 6),
-                  child: Row(
-                    children: [
-                      if (!searchOpen) ...[
-                        const Icon(Icons.live_tv_rounded, color: Color(0xFFE65312), size: 24),
-                        const SizedBox(width: 8),
-                        Text(
-                          'AnasTV',
-                          style: TextStyle(
-                            color: textColor,
-                            fontSize: 20,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: -0.4,
-                          ),
-                        ),
-                        const Spacer(),
-                      ] else ...[
-                        Expanded(
-                          child: TextField(
-                            controller: searchController,
-                            focusNode: searchFocus,
-                            style: TextStyle(color: textColor),
-                            onChanged: (v) => setState(() => query = v),
-                            decoration: InputDecoration(
-                              hintText: 'Search channels...',
-                              isDense: true,
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                              filled: true,
-                              fillColor: dark ? const Color(0xFF141821) : Colors.white,
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(24),
-                                borderSide: BorderSide.none,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                      IconButton(
-                        onPressed: _toggleSearch,
-                        icon: Icon(searchOpen ? Icons.close_rounded : Icons.search_rounded, color: textColor),
-                        tooltip: 'Search',
+                if (!loading && error == null && filterTabs.length > 1)
+                  Container(
+                    height: 44,
+                    width: double.infinity,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF050505),
+                      border: Border(
+                        bottom: BorderSide(color: Color(0xFF1F1F1F), width: 1),
                       ),
-                      IconButton(
-                        onPressed: widget.onToggleTheme,
-                        icon: Icon(dark ? Icons.light_mode_rounded : Icons.dark_mode_rounded, color: textColor),
-                        tooltip: 'Theme',
-                      ),
-                    ],
+                    ),
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      itemCount: filterTabs.length,
+                      itemBuilder: (context, index) {
+                        final label = filterTabs[index];
+                        final selected = label.toLowerCase() == selectedTab.toLowerCase();
+                        return _CategoryTab(
+                          label: label.toUpperCase(),
+                          selected: selected,
+                          onTap: () => setState(() => selectedTab = label),
+                        );
+                      },
+                    ),
                   ),
-                ),
-                SizedBox(
-                  height: 36,
-                  child: ListView(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    children: [
-                      PopupMenuButton<int>(
-                        onSelected: (id) => setState(() => languageId = id),
-                        itemBuilder: (_) => languages.entries
-                            .map((e) => PopupMenuItem(value: e.key, child: Text(e.value)))
-                            .toList(),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            color: languageId != 0
-                                ? const Color(0xFFE65312)
-                                : (dark ? const Color(0xFF191F2E) : const Color(0xFFEAEFF8)),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Row(
-                            children: [
-                              Text(
-                                languages[languageId] ?? 'Language',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                  color: languageId != 0 ? Colors.white : textColor,
-                                ),
-                              ),
-                              const SizedBox(width: 2),
-                              Icon(
-                                Icons.arrow_drop_down,
-                                size: 18,
-                                color: languageId != 0 ? Colors.white : textColor,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      _FilterPill(
-                        label: 'HD',
-                        selected: hdOnly,
-                        green: true,
-                        onTap: () => setState(() => hdOnly = !hdOnly),
-                      ),
-                      const SizedBox(width: 8),
-                      ...categories.entries.map((entry) => Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: _FilterPill(
-                              label: entry.value,
-                              selected: categoryId == entry.key,
-                              onTap: () => setState(() => categoryId = entry.key),
-                            ),
-                          )),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 8),
                 Expanded(
                   child: loading
                       ? const Center(child: CircularProgressIndicator(color: Color(0xFFE65312)))
@@ -804,7 +639,7 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
                                   children: [
                                     const Icon(Icons.wifi_off_rounded, color: Color(0xFFE65312), size: 48),
                                     const SizedBox(height: 12),
-                                    Text(error!, textAlign: TextAlign.center, style: TextStyle(color: textColor)),
+                                    Text(error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white)),
                                     const SizedBox(height: 16),
                                     FilledButton(onPressed: _loadChannels, child: const Text('Retry')),
                                   ],
@@ -816,8 +651,11 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
                                   child: Column(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      Text('Koi channel nahi mila', style: TextStyle(color: textColor)),
-                                      TextButton(onPressed: _resetFilters, child: const Text('Reset')),
+                                      const Text('Koi channel nahi mila', style: TextStyle(color: Colors.white)),
+                                      TextButton(
+                                        onPressed: () => setState(() => selectedTab = 'ALL'),
+                                        child: const Text('Show All'),
+                                      ),
                                     ],
                                   ),
                                 )
@@ -840,7 +678,6 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
                                         itemCount: filtered.length,
                                         itemBuilder: (context, index) => _ChannelCard(
                                           channel: filtered[index],
-                                          isDark: dark,
                                           autofocus: index == 0,
                                           onTap: () => _openChannel(filtered[index]),
                                         ),
@@ -857,6 +694,76 @@ class _AnasTvHomePageState extends State<AnasTvHomePage> {
                 child: const Center(child: CircularProgressIndicator(color: Color(0xFFE65312))),
               ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CategoryTab extends StatefulWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _CategoryTab({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  State<_CategoryTab> createState() => _CategoryTabState();
+}
+
+class _CategoryTabState extends State<_CategoryTab> {
+  bool focused = false;
+  bool hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = widget.selected;
+    return InkWell(
+      canRequestFocus: true,
+      onFocusChange: (v) => setState(() => focused = v),
+      onHover: (v) => setState(() => hovered = v),
+      onTap: widget.onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 140),
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          gradient: active
+              ? LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    const Color(0xFFE65312).withOpacity(0.06),
+                    const Color(0xFFE65312).withOpacity(0.28),
+                  ],
+                )
+              : null,
+          color: (!active && (focused || hovered)) ? const Color(0xFF161616) : null,
+          border: Border(
+            bottom: BorderSide(
+              color: active
+                  ? const Color(0xFFE65312)
+                  : (focused ? const Color(0xFFFF8A35) : Colors.transparent),
+              width: 2.5,
+            ),
+          ),
+        ),
+        child: Text(
+          widget.label,
+          maxLines: 1,
+          softWrap: false,
+          style: TextStyle(
+            fontSize: 12.5,
+            letterSpacing: 0.35,
+            fontWeight: active ? FontWeight.w700 : FontWeight.w600,
+            color: active
+                ? const Color(0xFFFF7A2F)
+                : (focused ? Colors.white : const Color(0xFFD0D4DC)),
+          ),
         ),
       ),
     );
@@ -1061,56 +968,13 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   }
 }
 
-class _FilterPill extends StatelessWidget {
-  final String label;
-  final bool selected, green;
-  final VoidCallback onTap;
-
-  const _FilterPill({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-    this.green = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final active = green ? const Color(0xFF10B981) : const Color(0xFFE65312);
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.symmetric(horizontal: 14),
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: selected ? active : (dark ? const Color(0xFF191F2E) : const Color(0xFFEAEFF8)),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: selected ? active : (dark ? const Color(0xFF283148) : const Color(0xFFD9E0EE)),
-          ),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-            color: selected ? Colors.white : (dark ? const Color(0xFFBAC4D9) : const Color(0xFF3E485E)),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _ChannelCard extends StatefulWidget {
   final TvChannel channel;
-  final bool isDark, autofocus;
+  final bool autofocus;
   final VoidCallback onTap;
 
   const _ChannelCard({
     required this.channel,
-    required this.isDark,
     required this.onTap,
     this.autofocus = false,
   });
@@ -1124,18 +988,16 @@ class _ChannelCardState extends State<_ChannelCard> {
 
   @override
   Widget build(BuildContext context) {
-    final cardBg = widget.isDark ? const Color(0xFF080808) : Colors.white;
-    final nameColor = widget.isDark ? Colors.white : const Color(0xFF121826);
     return LayoutBuilder(builder: (context, box) {
       final w = box.maxWidth;
-      final logoSize = w * .72;
-      final nameSize = (w * .145).clamp(9.0, 26.0).toDouble();
+      final logoSize = w * .76;
+      final nameSize = (w * .155).clamp(9.0, 30.0).toDouble();
       final highlighted = focused || hovered;
       return AnimatedScale(
         scale: focused ? 1.035 : 1,
         duration: const Duration(milliseconds: 130),
         child: Material(
-          color: cardBg,
+          color: const Color(0xFF080808),
           borderRadius: BorderRadius.circular(8),
           child: InkWell(
             autofocus: widget.autofocus,
@@ -1148,7 +1010,7 @@ class _ChannelCardState extends State<_ChannelCard> {
               duration: const Duration(milliseconds: 130),
               padding: const EdgeInsets.fromLTRB(4, 6, 4, 4),
               decoration: BoxDecoration(
-                color: cardBg,
+                color: const Color(0xFF080808),
                 border: Border.all(
                   color: highlighted ? const Color(0xFFFF8A35) : const Color(0xFFD94B0A),
                   width: focused ? 2.4 : (hovered ? 1.8 : 1.2),
@@ -1188,10 +1050,11 @@ class _ChannelCardState extends State<_ChannelCard> {
                       child: _ChannelMarquee(
                         text: widget.channel.name,
                         style: TextStyle(
-                          color: nameColor,
+                          color: Colors.white,
                           fontSize: nameSize,
                           height: 1.05,
                           fontWeight: FontWeight.w500,
+                          fontFamily: 'Roboto',
                           letterSpacing: -.25,
                         ),
                       ),
