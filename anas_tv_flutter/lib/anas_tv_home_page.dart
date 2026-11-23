@@ -1592,6 +1592,7 @@ class _AnasTvSearchScreenState extends State<AnasTvSearchScreen> {
 }
 
 class _StbProgram {
+  final int startMs;
   final String title;
   final String timeLabel;
   final String description;
@@ -1601,6 +1602,7 @@ class _StbProgram {
   final bool isLiveNow;
 
   const _StbProgram({
+    required this.startMs,
     required this.title,
     required this.timeLabel,
     required this.description,
@@ -1633,7 +1635,7 @@ int _parseEpochMsStatic(dynamic val) {
 }
 
 List<Map<String, dynamic>> _parseEpgBatchIsolate(Map<String, dynamic> args) {
-  final bodies = (args['bodies'] as List).cast<String>();
+  final body = args['body'] as String;
   final nowMs = args['nowMs'] as int;
   final cutoffMs = args['cutoffMs'] as int;
   final channelName = args['channelName'] as String;
@@ -1650,8 +1652,7 @@ List<Map<String, dynamic>> _parseEpgBatchIsolate(Map<String, dynamic> args) {
   final seenStart = <int>{};
   final rawEntries = <Map<String, dynamic>>[];
 
-  for (final body in bodies) {
-    if (body.trim().isEmpty) continue;
+  if (body.trim().isNotEmpty) {
     try {
       final decoded = jsonDecode(body);
       final List rows = decoded is Map && decoded['epg'] is List ? decoded['epg'] as List : [];
@@ -1692,6 +1693,7 @@ List<Map<String, dynamic>> _parseEpgBatchIsolate(Map<String, dynamic> args) {
     final rawDesc = (raw['description'] ?? '$channelName television broadcast.').toString().trim();
     final day = days[(sDt.weekday - 1).clamp(0, 6)];
     out.add({
+      'startMs': sMs,
       'title': rawTitle.isEmpty ? '$channelName Show' : rawTitle,
       'timeLabel': '$day : ${fmtTime(sDt)} - ${fmtTime(eDt)}',
       'description': rawDesc.isEmpty ? '$channelName television broadcast.' : rawDesc,
@@ -1706,8 +1708,11 @@ List<Map<String, dynamic>> _parseEpgBatchIsolate(Map<String, dynamic> args) {
 
 class _EpgService {
   static final Map<int, List<_StbProgram>> _cache = {};
+  static final Map<int, Set<int>> _loadedOffsets = {};
 
   static List<_StbProgram>? cachedFor(int channelId) => _cache[channelId];
+  static bool hasOffset(int channelId, int offset) =>
+      _loadedOffsets[channelId]?.contains(offset) ?? false;
 
   static String _fmtTime(DateTime dt) {
     final hour24 = dt.hour;
@@ -1774,7 +1779,7 @@ class _EpgService {
     }
 
     final list = <_StbProgram>[];
-    for (var i = 0; i < 48; i++) {
+    for (var i = 0; i < 16; i++) {
       final start = firstStart.add(Duration(minutes: i * 60 - (i > 0 ? 30 : 0)));
       final end = i == 0 ? firstStart.add(const Duration(minutes: 30)) : start.add(const Duration(minutes: 60));
       final tpl = templates[i % templates.length];
@@ -1782,6 +1787,7 @@ class _EpgService {
           ? (now.difference(start).inSeconds / 1800.0).clamp(0.05, 0.96)
           : 0.0;
       list.add(_StbProgram(
+        startMs: start.millisecondsSinceEpoch,
         title: tpl.$1,
         timeLabel: '${_weekdayShort(start.weekday)} : ${_fmtTime(start)} - ${_fmtTime(end)}',
         description: tpl.$2,
@@ -1794,56 +1800,68 @@ class _EpgService {
     return list;
   }
 
-  static Future<List<_StbProgram>> fetchSchedule48h(TvChannel ch) async {
-    final cached = _cache[ch.id];
-    if (cached != null && cached.isNotEmpty) return cached;
+  static Future<List<_StbProgram>> fetchOffset(TvChannel ch, {int offset = 0}) async {
+    final loaded = _loadedOffsets.putIfAbsent(ch.id, () => <int>{});
+    final existing = _cache[ch.id];
+    if (loaded.contains(offset) && existing != null && existing.isNotEmpty) {
+      return existing;
+    }
 
     if (ch.id >= 1000000) {
       return fallback48h(ch);
     }
 
     try {
-      final responses = await Future.wait([0, 1, 2].map((offset) {
-        final url = 'https://jiotv.data.cdn.jio.com/apis/v1.3/getepg/get?channel_id=${ch.id}&offset=$offset';
-        return http
-            .get(Uri.parse(url), headers: _AnasTvHomePageState.headers)
-            .timeout(const Duration(seconds: 6));
-      }));
+      final url = 'https://jiotv.data.cdn.jio.com/apis/v1.3/getepg/get?channel_id=${ch.id}&offset=$offset';
+      final res = await http
+          .get(Uri.parse(url), headers: _AnasTvHomePageState.headers)
+          .timeout(const Duration(seconds: 6));
 
-      final bodies = responses
-          .where((r) => r.statusCode == 200 && r.body.trim().isNotEmpty)
-          .map((r) => r.body)
-          .toList();
-
-      if (bodies.isEmpty) return fallback48h(ch);
+      if (res.statusCode != 200 || res.body.trim().isEmpty) {
+        return existing ?? fallback48h(ch);
+      }
 
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final cutoffMs = nowMs + const Duration(hours: 48).inMilliseconds;
       final parsedMaps = await compute(_parseEpgBatchIsolate, {
-        'bodies': bodies,
+        'body': res.body,
         'nowMs': nowMs,
         'cutoffMs': cutoffMs,
         'channelName': ch.name,
       });
 
-      if (parsedMaps.isEmpty) return fallback48h(ch);
+      loaded.add(offset);
+      if (parsedMaps.isEmpty) {
+        return existing ?? fallback48h(ch);
+      }
 
-      final programs = parsedMaps
-          .map((m) => _StbProgram(
-                title: (m['title'] ?? '').toString(),
-                timeLabel: (m['timeLabel'] ?? '').toString(),
-                description: (m['description'] ?? '').toString(),
-                posterUrl: (m['posterUrl'] ?? '').toString(),
-                fallbackPosterUrl: (m['fallbackPosterUrl'] ?? '').toString(),
-                progress: (m['progress'] as num?)?.toDouble() ?? 0.0,
-                isLiveNow: m['isLiveNow'] == true,
-              ))
-          .toList();
+      final byStart = <int, _StbProgram>{};
+      if (existing != null) {
+        for (final item in existing) {
+          byStart[item.startMs] = item;
+        }
+      }
+      for (final m in parsedMaps) {
+        final sMs = (m['startMs'] as num?)?.toInt() ?? 0;
+        if (sMs <= 0) continue;
+        byStart[sMs] = _StbProgram(
+          startMs: sMs,
+          title: (m['title'] ?? '').toString(),
+          timeLabel: (m['timeLabel'] ?? '').toString(),
+          description: (m['description'] ?? '').toString(),
+          posterUrl: (m['posterUrl'] ?? '').toString(),
+          fallbackPosterUrl: (m['fallbackPosterUrl'] ?? '').toString(),
+          progress: (m['progress'] as num?)?.toDouble() ?? 0.0,
+          isLiveNow: m['isLiveNow'] == true,
+        );
+      }
 
-      _cache[ch.id] = programs;
-      return programs;
+      final merged = byStart.values.toList()..sort((a, b) => a.startMs.compareTo(b.startMs));
+      if (merged.isEmpty) return existing ?? fallback48h(ch);
+      _cache[ch.id] = merged;
+      return merged;
     } catch (_) {
-      return fallback48h(ch);
+      return existing ?? fallback48h(ch);
     }
   }
 }
@@ -1870,6 +1888,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   static const List<Shadow> _textShadows = [
     Shadow(color: Color(0xCC000000), blurRadius: 2, offset: Offset(0, 1)),
   ];
+  static const MethodChannel _texChannel = MethodChannel('anas_tv/texture_player');
 
   final FocusNode _playerFocus = FocusNode();
 
@@ -1888,6 +1907,11 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   bool _optionsMode = false;
   int _selectedOptionIdx = 0;
 
+  bool _useSecurePlatformView = false;
+  int? _textureId;
+  double _videoWidth = 16;
+  double _videoHeight = 9;
+
   _StbPickerKind? _openPicker;
   List<Map<String, dynamic>> _pickerItems = [];
   int _pickerFocusedIdx = 0;
@@ -1897,20 +1921,21 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   String _selectedAudioLabel = 'Default';
   String _selectedQualityLabel = 'Auto (Best)';
 
-  MethodChannel? _channel;
+  MethodChannel? _platformChannel;
   Timer? _watchdog;
   Timer? _bannerAutoHideTimer;
   Timer? _clockTimer;
   Timer? _epgDebounceTimer;
-  Timer? _posterPrecacheDelayTimer;
   DateTime _now = DateTime.now();
   int _playRequestSeq = 0;
-  int _precacheSeq = 0;
+  int _lookaheadSeq = 0;
   double _panDeltaX = 0;
   double _panDeltaY = 0;
 
   TvChannel get _playingChannel => widget.channels[_playingIndex];
   TvChannel get _previewChannel => widget.channels[_previewIndex];
+  MethodChannel? get _activePlayerChannel =>
+      _useSecurePlatformView ? _platformChannel : _texChannel;
 
   _StbProgram get _activeProgram {
     if (_previewPrograms.isEmpty) {
@@ -1932,7 +1957,8 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       if (mounted) setState(() => _now = DateTime.now());
     });
 
-    _loadPreviewSchedule(_previewChannel, immediateFetch: true);
+    _initTextureChannel();
+    _loadPreviewAndNeighbors(_previewIndex, immediateFetch: true);
     _startChannelStream(_playingIndex);
     _scheduleBannerAutoHide();
 
@@ -1949,15 +1975,61 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     });
   }
 
+  Future<void> _initTextureChannel() async {
+    _texChannel.setMethodCallHandler(_onNativePlayerCall);
+    try {
+      final id = await _texChannel.invokeMethod<num>('create');
+      if (!mounted || id == null) return;
+      setState(() => _textureId = id.toInt());
+      _sendPlayIfReady();
+    } catch (_) {}
+  }
+
+  Future<dynamic> _onNativePlayerCall(MethodCall call) async {
+    if (!mounted) return;
+    if (call.method == 'onStateChanged') {
+      final state = (call.arguments ?? 'unknown').toString();
+      final isBuffering = state == 'idle' || state == 'buffering';
+      if (_loading != isBuffering) {
+        setState(() => _loading = isBuffering);
+      }
+      if (state == 'ready' || state == 'ended') {
+        _watchdog?.cancel();
+        if (_useSecurePlatformView) {
+          _platformChannel?.invokeMethod('setResizeMode', _resizeMode);
+        }
+      }
+    } else if (call.method == 'onVideoSizeChanged') {
+      final args = call.arguments;
+      if (args is Map) {
+        final w = (args['width'] as num?)?.toDouble() ?? 0;
+        final h = (args['height'] as num?)?.toDouble() ?? 0;
+        if (w > 0 && h > 0 && (w != _videoWidth || h != _videoHeight)) {
+          setState(() {
+            _videoWidth = w;
+            _videoHeight = h;
+          });
+        }
+      }
+    } else if (call.method == 'onError') {
+      _watchdog?.cancel();
+      setState(() {
+        _loading = false;
+        _error = (call.arguments ?? 'Native player reported an error').toString();
+      });
+    }
+  }
+
   @override
   void dispose() {
-    _precacheSeq++;
+    _lookaheadSeq++;
     _watchdog?.cancel();
     _bannerAutoHideTimer?.cancel();
     _clockTimer?.cancel();
     _epgDebounceTimer?.cancel();
-    _posterPrecacheDelayTimer?.cancel();
-    _channel?.setMethodCallHandler(null);
+    _platformChannel?.setMethodCallHandler(null);
+    _texChannel.setMethodCallHandler(null);
+    _texChannel.invokeMethod('stop').catchError((_) {});
     _playerFocus.dispose();
     if (!widget.isTv) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -1977,7 +2049,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
         _programIndex = 0;
         _previewIndex = _playingIndex;
       });
-      _loadPreviewSchedule(_playingChannel, immediateFetch: true);
+      _loadPreviewAndNeighbors(_playingIndex, immediateFetch: true);
     });
   }
 
@@ -1992,75 +2064,107 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       if (openOptions) _selectedOptionIdx = _selectedOptionIdx.clamp(0, 3);
     });
     if (resetToPlaying) {
-      _loadPreviewSchedule(_playingChannel, immediateFetch: true);
+      _loadPreviewAndNeighbors(_playingIndex, immediateFetch: true);
     }
     _scheduleBannerAutoHide();
   }
 
-  int? _precachedChannelId;
+  Future<void> _precachePoster(String url) async {
+    if (!mounted || url.trim().isEmpty) return;
+    await precacheImage(
+      CachedNetworkImageProvider(url, maxWidth: 640, maxHeight: 360),
+      context,
+    ).catchError((_) {});
+  }
 
-  void _loadPreviewSchedule(TvChannel target, {bool immediateFetch = false}) {
+  // Exact 1-step sliding lookahead:
+  // 1) Current channel -> load Live (progIdx) first, then automatically Up Next (progIdx + 1) only.
+  // 2) Left (-1) & Right (+1) channels -> load ONLY their Live (index 0) data & poster.
+  void _loadPreviewAndNeighbors(int targetIdx, {bool immediateFetch = false}) {
     _epgDebounceTimer?.cancel();
-    _posterPrecacheDelayTimer?.cancel();
-    _precacheSeq++;
-    _precachedChannelId = null;
+    final seq = ++_lookaheadSeq;
+    final target = widget.channels[targetIdx];
 
-    final immediate = _EpgService.cachedFor(target.id);
+    final cached = _EpgService.cachedFor(target.id);
     setState(() {
-      _previewPrograms = (immediate != null && immediate.isNotEmpty)
-          ? immediate
-          : _EpgService.fallback48h(target);
+      _previewPrograms =
+          (cached != null && cached.isNotEmpty) ? cached : _EpgService.fallback48h(target);
       _programIndex = 0;
     });
 
-    if (immediate != null && immediate.isNotEmpty) {
-      _scheduleGentlePosterPrecache(immediate, target.id);
-      return;
+    Future<void> syncCurrentAndAdjacent() async {
+      if (!mounted || seq != _lookaheadSeq || _previewIndex != targetIdx) return;
+
+      // Step 1: Current channel offset=0 -> Live (0) poster -> Next (1) poster
+      var programs = (cached != null && cached.isNotEmpty)
+          ? cached
+          : await _EpgService.fetchOffset(target, offset: 0);
+      if (!mounted || seq != _lookaheadSeq || _previewIndex != targetIdx) return;
+
+      if (programs.length < 2 && !_EpgService.hasOffset(target.id, 1)) {
+        programs = await _EpgService.fetchOffset(target, offset: 1);
+        if (!mounted || seq != _lookaheadSeq || _previewIndex != targetIdx) return;
+      }
+
+      if (programs.isNotEmpty) {
+        setState(() {
+          _previewPrograms = programs;
+          if (_programIndex >= programs.length) _programIndex = 0;
+        });
+        await _precachePoster(programs[0].posterUrl);
+        if (!mounted || seq != _lookaheadSeq || _previewIndex != targetIdx) return;
+        if (programs.length > 1) {
+          await _precachePoster(programs[1].posterUrl);
+        }
+      }
+
+      if (!mounted || seq != _lookaheadSeq || _previewIndex != targetIdx) return;
+
+      // Step 2: Adjacent channels (-1 and +1) -> ONLY Live (index 0) data & poster
+      if (widget.channels.length > 1) {
+        final total = widget.channels.length;
+        for (final delta in [-1, 1]) {
+          final adjIdx = (targetIdx + delta + total) % total;
+          if (adjIdx == targetIdx) continue;
+          final adjCh = widget.channels[adjIdx];
+          final adjList = await _EpgService.fetchOffset(adjCh, offset: 0);
+          if (!mounted || seq != _lookaheadSeq || _previewIndex != targetIdx) return;
+          if (adjList.isNotEmpty) {
+            await _precachePoster(adjList[0].posterUrl);
+          }
+        }
+      }
     }
 
-    Future<void> runFetch() async {
-      final fetched = await _EpgService.fetchSchedule48h(target);
-      if (!mounted || _previewChannel.id != target.id) return;
-      setState(() {
-        _previewPrograms = fetched;
-        if (_programIndex >= fetched.length) _programIndex = 0;
-      });
-      _scheduleGentlePosterPrecache(fetched, target.id);
-    }
-
-    if (immediateFetch) {
-      runFetch();
+    if (immediateFetch || (cached != null && cached.isNotEmpty)) {
+      syncCurrentAndAdjacent();
     } else {
-      _epgDebounceTimer = Timer(const Duration(milliseconds: 180), runFetch);
+      _epgDebounceTimer = Timer(const Duration(milliseconds: 140), syncCurrentAndAdjacent);
     }
   }
 
-  void _scheduleGentlePosterPrecache(List<_StbProgram> programs, int channelId) {
-    if (_precachedChannelId == channelId) return;
-    _posterPrecacheDelayTimer?.cancel();
-    final delayMs = _loading ? 900 : 120;
-    _posterPrecacheDelayTimer = Timer(Duration(milliseconds: delayMs), () {
-      _precacheSchedulePosters(programs, channelId);
-    });
-  }
+  Future<void> _precacheNextProgramOnly(int progIdx) async {
+    final nextIdx = progIdx + 1;
+    final ch = _previewChannel;
 
-  Future<void> _precacheSchedulePosters(List<_StbProgram> programs, int channelId) async {
-    _precachedChannelId = channelId;
-    final seq = ++_precacheSeq;
-    final seen = <String>{};
-    var count = 0;
-    for (final p in programs) {
-      if (!mounted || seq != _precacheSeq || _previewChannel.id != channelId) return;
-      final url = p.posterUrl;
-      if (url.isEmpty || !seen.add(url)) continue;
-      await precacheImage(
-        CachedNetworkImageProvider(url, maxWidth: 400, maxHeight: 300),
-        context,
-      ).catchError((_) {});
-      if (!mounted || seq != _precacheSeq || _previewChannel.id != channelId) return;
-      count++;
-      if (count >= 16) break;
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+    // Lazily fetch next EPG day only if user scrolls near the end of currently loaded items.
+    if (_previewPrograms.length - nextIdx <= 2) {
+      if (!_EpgService.hasOffset(ch.id, 1)) {
+        final more = await _EpgService.fetchOffset(ch, offset: 1);
+        if (mounted && _previewChannel.id == ch.id) {
+          setState(() => _previewPrograms = more);
+        }
+      } else if (!_EpgService.hasOffset(ch.id, 2)) {
+        final more = await _EpgService.fetchOffset(ch, offset: 2);
+        if (mounted && _previewChannel.id == ch.id) {
+          setState(() => _previewPrograms = more);
+        }
+      }
+    }
+
+    if (!mounted || _previewChannel.id != ch.id) return;
+    if (nextIdx >= 0 && nextIdx < _previewPrograms.length) {
+      await _precachePoster(_previewPrograms[nextIdx].posterUrl);
     }
   }
 
@@ -2082,7 +2186,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       _selectedAudioLabel = 'Default';
       _selectedQualityLabel = 'Auto (Best)';
     });
-    _loadPreviewSchedule(target, immediateFetch: true);
+    _loadPreviewAndNeighbors(targetIndex, immediateFetch: true);
 
     _watchdog = Timer(const Duration(seconds: 25), () {
       if (!mounted || reqId != _playRequestSeq || !_loading) return;
@@ -2096,6 +2200,14 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       final resolved = await StreamResolver.resolve(target);
       if (!mounted || reqId != _playRequestSeq) return;
       _resolved = resolved;
+      final needsSecureSurface = resolved.drmLicenseUrl.isNotEmpty;
+      if (_useSecurePlatformView != needsSecureSurface) {
+        if (needsSecureSurface) {
+          await _texChannel.invokeMethod('stop').catchError((_) {});
+        }
+        if (!mounted || reqId != _playRequestSeq) return;
+        setState(() => _useSecurePlatformView = needsSecureSurface);
+      }
       _sendPlayIfReady();
     } catch (e) {
       if (!mounted || reqId != _playRequestSeq) return;
@@ -2108,40 +2220,19 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
   }
 
   void _created(int id) {
-    if (_channel != null) return;
+    if (_platformChannel != null) return;
     final ch = MethodChannel('anas_tv/media3_player_$id');
-    _channel = ch;
-
-    ch.setMethodCallHandler((call) async {
-      if (!mounted) return;
-      if (call.method == 'onStateChanged') {
-        final state = (call.arguments ?? 'unknown').toString();
-        final isBuffering = state == 'idle' || state == 'buffering';
-        if (_loading != isBuffering) {
-          setState(() => _loading = isBuffering);
-        }
-        if (state == 'ready' || state == 'ended') {
-          _watchdog?.cancel();
-          _channel?.invokeMethod('setResizeMode', _resizeMode);
-          _scheduleGentlePosterPrecache(_previewPrograms, _previewChannel.id);
-        }
-      } else if (call.method == 'onError') {
-        _watchdog?.cancel();
-        setState(() {
-          _loading = false;
-          _error = (call.arguments ?? 'Native player reported an error').toString();
-        });
-      }
-    });
-
+    _platformChannel = ch;
+    ch.setMethodCallHandler(_onNativePlayerCall);
     ch.invokeMethod('setResizeMode', _resizeMode);
     _sendPlayIfReady();
   }
 
   void _sendPlayIfReady() {
-    final ch = _channel;
     final pb = _resolved;
-    if (ch == null || pb == null) return;
+    if (pb == null) return;
+    final ch = _useSecurePlatformView ? _platformChannel : (_textureId != null ? _texChannel : null);
+    if (ch == null) return;
 
     ch.invokeMethod('play', {
       'streamUrl': pb.streamUrl,
@@ -2168,7 +2259,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       _programIndex = 0;
       _programAnimDir = 1;
     });
-    _loadPreviewSchedule(widget.channels[nextIdx]);
+    _loadPreviewAndNeighbors(nextIdx);
     _scheduleBannerAutoHide();
   }
 
@@ -2180,6 +2271,9 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
         _programAnimDir = delta >= 0 ? 1 : -1;
         _programIndex = next;
       });
+      if (delta >= 0) {
+        _precacheNextProgramOnly(next);
+      }
     }
     _scheduleBannerAutoHide();
   }
@@ -2277,7 +2371,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       ];
     } else if (kind == _StbPickerKind.audio) {
       try {
-        final raw = await _channel?.invokeMethod<List<dynamic>>('getAudioTracks') ?? [];
+        final raw = await _activePlayerChannel?.invokeMethod<List<dynamic>>('getAudioTracks') ?? [];
         items = raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
       } catch (_) {}
       if (items.isEmpty) {
@@ -2287,7 +2381,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
       }
     } else if (kind == _StbPickerKind.quality) {
       try {
-        final raw = await _channel?.invokeMethod<List<dynamic>>('getVideoQualities') ?? [];
+        final raw = await _activePlayerChannel?.invokeMethod<List<dynamic>>('getVideoQualities') ?? [];
         items = raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
       } catch (_) {}
       if (items.isEmpty) {
@@ -2313,7 +2407,9 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
 
     if (kind == _StbPickerKind.stretch) {
       final mode = (item['id'] ?? 'fill').toString();
-      await _channel?.invokeMethod('setResizeMode', mode);
+      if (_useSecurePlatformView) {
+        await _platformChannel?.invokeMethod('setResizeMode', mode);
+      }
       if (!mounted) return;
       setState(() {
         _resizeMode = mode;
@@ -2322,7 +2418,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     } else if (kind == _StbPickerKind.audio) {
       final g = (item['groupIndex'] as num?)?.toInt() ?? -1;
       final t = (item['trackIndex'] as num?)?.toInt() ?? -1;
-      await _channel?.invokeMethod('setAudioTrack', {'groupIndex': g, 'trackIndex': t});
+      await _activePlayerChannel?.invokeMethod('setAudioTrack', {'groupIndex': g, 'trackIndex': t});
       if (!mounted) return;
       setState(() {
         _selectedAudioLabel = (item['label'] ?? 'Audio').toString();
@@ -2331,7 +2427,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     } else if (kind == _StbPickerKind.quality) {
       final g = (item['groupIndex'] as num?)?.toInt() ?? -1;
       final t = (item['trackIndex'] as num?)?.toInt() ?? -1;
-      await _channel?.invokeMethod('setVideoQuality', {'groupIndex': g, 'trackIndex': t});
+      await _activePlayerChannel?.invokeMethod('setVideoQuality', {'groupIndex': g, 'trackIndex': t});
       if (!mounted) return;
       setState(() {
         _selectedQualityLabel = (item['label'] ?? 'Auto').toString();
@@ -2343,7 +2439,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
 
   Future<void> _togglePlayPause() async {
     final nextPaused = !_isPaused;
-    await _channel?.invokeMethod(nextPaused ? 'pause' : 'resume');
+    await _activePlayerChannel?.invokeMethod(nextPaused ? 'pause' : 'resume');
     if (!mounted) return;
     setState(() => _isPaused = nextPaused);
     _scheduleBannerAutoHide();
@@ -2372,6 +2468,7 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     _isExiting = true;
     _watchdog?.cancel();
     _bannerAutoHideTimer?.cancel();
+    _texChannel.invokeMethod('stop').catchError((_) {});
     if (!widget.isTv) {
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       await SystemChrome.setPreferredOrientations(const [DeviceOrientation.portraitUp]);
@@ -2397,8 +2494,8 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
         _bannerVisible = false;
         _programIndex = 0;
         _previewIndex = _playingIndex;
-        _loadPreviewSchedule(_playingChannel);
       });
+      _loadPreviewAndNeighbors(_playingIndex, immediateFetch: true);
       _bannerAutoHideTimer?.cancel();
       return;
     }
@@ -2535,15 +2632,27 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
     }
   }
 
+  BoxFit get _videoBoxFit {
+    switch (_resizeMode) {
+      case 'fit':
+        return BoxFit.contain;
+      case 'zoom':
+        return BoxFit.cover;
+      default:
+        return BoxFit.fill;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final previewCh = _previewChannel;
     final activeProgram = _activeProgram;
-    final screenW = MediaQuery.sizeOf(context).width;
-    final compactLayout = screenW < 720;
-    final posterWidth = compactLayout ? 152.0 : 260.0;
-    final posterHeight = compactLayout ? 160.0 : 200.0;
-    final stripTopOffset = compactLayout ? 34.0 : 48.0;
+    final size = MediaQuery.sizeOf(context);
+    final compactLayout = !widget.isTv || size.width < 720 || size.height < 500;
+    final narrowCompact = size.width < 540;
+    final posterWidth = narrowCompact ? 156.0 : (compactLayout ? 250.0 : 340.0);
+    final posterHeight = narrowCompact ? 96.0 : (compactLayout ? 150.0 : 192.0);
+    final stripTopOffset = narrowCompact ? 12.0 : (compactLayout ? 24.0 : 44.0);
     final progKey = ValueKey('${previewCh.id}_$_programIndex');
     final posterKey = ValueKey('poster_${previewCh.id}_$_programIndex');
 
@@ -2595,15 +2704,15 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
                     final vx = d.velocity.pixelsPerSecond.dx;
                     final vy = d.velocity.pixelsPerSecond.dy;
                     if (_panDeltaX.abs() >= _panDeltaY.abs()) {
-                      if (_panDeltaX < -36 || vx < -280) {
+                      if (_panDeltaX < -32 || vx < -220) {
                         _triggerRight();
-                      } else if (_panDeltaX > 36 || vx > 280) {
+                      } else if (_panDeltaX > 32 || vx > 220) {
                         _triggerLeft();
                       }
                     } else {
-                      if (_panDeltaY < -32 || vy < -260) {
+                      if (_panDeltaY < -28 || vy < -200) {
                         _triggerDown();
-                      } else if (_panDeltaY > 32 || vy > 260) {
+                      } else if (_panDeltaY > 28 || vy > 200) {
                         _triggerUp();
                       }
                     }
@@ -2612,28 +2721,45 @@ class _AnasTvPlayerScreenState extends State<AnasTvPlayerScreen> {
             child: Stack(
               fit: StackFit.expand,
               children: [
-                RepaintBoundary(
-                  child: PlatformViewLink(
-                    viewType: 'anas_tv/media3_player',
-                    surfaceFactory: (context, controller) => AndroidViewSurface(
-                      controller: controller as AndroidViewController,
-                      gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
-                      hitTestBehavior: PlatformViewHitTestBehavior.opaque,
-                    ),
-                    onCreatePlatformView: (params) {
-                      return PlatformViewsService.initExpensiveAndroidView(
-                        id: params.id,
-                        viewType: 'anas_tv/media3_player',
-                        layoutDirection: TextDirection.ltr,
-                        creationParams: const <String, dynamic>{},
-                        creationParamsCodec: const StandardMessageCodec(),
-                        onFocus: () => params.onFocusChanged(true),
-                      )
-                        ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
-                        ..addOnPlatformViewCreatedListener(_created)
-                        ..create();
-                    },
-                  ),
+                IgnorePointer(
+                  child: _useSecurePlatformView
+                      ? RepaintBoundary(
+                          child: PlatformViewLink(
+                            viewType: 'anas_tv/media3_player',
+                            surfaceFactory: (context, controller) => AndroidViewSurface(
+                              controller: controller as AndroidViewController,
+                              gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+                              hitTestBehavior: PlatformViewHitTestBehavior.transparent,
+                            ),
+                            onCreatePlatformView: (params) {
+                              return PlatformViewsService.initExpensiveAndroidView(
+                                id: params.id,
+                                viewType: 'anas_tv/media3_player',
+                                layoutDirection: TextDirection.ltr,
+                                creationParams: const <String, dynamic>{},
+                                creationParamsCodec: const StandardMessageCodec(),
+                                onFocus: () => params.onFocusChanged(true),
+                              )
+                                ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
+                                ..addOnPlatformViewCreatedListener(_created)
+                                ..create();
+                            },
+                          ),
+                        )
+                      : (_textureId != null
+                          ? SizedBox.expand(
+                              child: ClipRect(
+                                child: FittedBox(
+                                  fit: _videoBoxFit,
+                                  child: SizedBox(
+                                    width: _videoWidth,
+                                    height: _videoHeight,
+                                    child: Texture(textureId: _textureId!),
+                                  ),
+                                ),
+                              ),
+                            )
+                          : const ColoredBox(color: Colors.black)),
                 ),
                 if (_loading) const Center(child: _BrandCircularLoader(size: 84)),
                 if (_error != null)
@@ -3267,8 +3393,8 @@ class _ProgramPosterState extends State<_ProgramPoster> {
       fit: BoxFit.cover,
       width: double.infinity,
       height: double.infinity,
-      memCacheWidth: 400,
-      memCacheHeight: 300,
+      memCacheWidth: 640,
+      memCacheHeight: 360,
       fadeInDuration: Duration.zero,
       fadeOutDuration: Duration.zero,
       useOldImageOnUrlChange: true,

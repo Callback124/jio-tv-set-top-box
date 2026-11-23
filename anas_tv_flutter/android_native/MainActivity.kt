@@ -13,9 +13,19 @@ import io.flutter.plugin.platform.PlatformView
 import io.flutter.plugin.platform.PlatformViewFactory
 
 class MainActivity : FlutterActivity() {
+    private var texturePlayer: TextureMedia3Player? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val messenger = flutterEngine.dartExecutor.binaryMessenger
+
+        texturePlayer?.dispose()
+        texturePlayer = TextureMedia3Player(
+            applicationContext,
+            this,
+            flutterEngine.renderer,
+            messenger
+        )
 
         flutterEngine.platformViewsController.registry.registerViewFactory(
             "anas_tv/media3_player",
@@ -33,6 +43,12 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    override fun onDestroy() {
+        texturePlayer?.dispose()
+        texturePlayer = null
+        super.onDestroy()
     }
 }
 
