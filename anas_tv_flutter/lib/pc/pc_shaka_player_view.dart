@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter_windows/webview_flutter_windows.dart';
@@ -9,7 +10,7 @@ import 'pc_proxy_server.dart';
 class PcShakaPlayerController {
   static bool _envInitialized = false;
 
-  final PcLocalPlayerServer _server = PcLocalPlayerServer();
+  final PcLocalPlayerServer _server = PcLocalPlayerServer.instance;
   final WebviewController _webview = WebviewController();
   final List<StreamSubscription> _subs = [];
 
@@ -35,6 +36,19 @@ class PcShakaPlayerController {
 
   bool get isInitialized => _initialized;
 
+  String? _resolveWebViewUserDataPath() {
+    try {
+      final baseDir = Platform.environment['LOCALAPPDATA'] ?? Directory.systemTemp.path;
+      final dir = Directory('$baseDir${Platform.pathSeparator}AnasTV${Platform.pathSeparator}WebView2');
+      if (!dir.existsSync()) {
+        dir.createSync(recursive: true);
+      }
+      return dir.path;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> init() async {
     try {
       await _server.start();
@@ -42,10 +56,13 @@ class PcShakaPlayerController {
 
       if (!_envInitialized) {
         _envInitialized = true;
+        final userDataPath = _resolveWebViewUserDataPath();
+        final originFlag = '--unsafely-treat-insecure-origin-as-secure=${_server.origin}';
         try {
           await WebviewController.initializeEnvironment(
+            userDataPath: userDataPath,
             additionalArguments:
-                '--autoplay-policy=no-user-gesture-required --disable-features=HardwareMediaKeyHandling',
+                '--autoplay-policy=no-user-gesture-required --disable-features=HardwareMediaKeyHandling $originFlag',
           );
         } catch (_) {}
       }
@@ -128,20 +145,6 @@ class PcShakaPlayerController {
 
   Future<void> _loadIntoShaka(PcResolvedPlayback playback) async {
     if (_disposed || !_engineReady) return;
-    final sid = _server.registerSession(
-      PcProxySession(
-        streamUrl: playback.streamUrl,
-        headers: playback.headers,
-        drmLicenseUrl: playback.drmLicenseUrl,
-        drmHeaders: playback.drmHeaders,
-      ),
-    );
-
-    final proxiedUrl = _server.toProxyUrl(sid, playback.streamUrl);
-    final drmProxyUrl = playback.drmLicenseUrl.isNotEmpty
-        ? _server.toDrmProxyUrl(sid, playback.drmLicenseUrl)
-        : '';
-
     final normalizedClearKeys = <String, String>{};
     playback.clearKeys.forEach((k, v) {
       final hexK = _toHexKey(k);
@@ -150,6 +153,21 @@ class PcShakaPlayerController {
         normalizedClearKeys[hexK] = hexV;
       }
     });
+
+    final sid = _server.registerSession(
+      PcProxySession(
+        streamUrl: playback.streamUrl,
+        headers: playback.headers,
+        drmLicenseUrl: playback.drmLicenseUrl,
+        drmHeaders: playback.drmHeaders,
+        clearKeys: normalizedClearKeys,
+      ),
+    );
+
+    final proxiedUrl = _server.toProxyUrl(sid, playback.streamUrl);
+    final drmProxyUrl = playback.drmLicenseUrl.isNotEmpty
+        ? _server.toDrmProxyUrl(sid, playback.drmLicenseUrl)
+        : '';
 
     final lowerUrl = playback.streamUrl.toLowerCase();
     String? mimeType;

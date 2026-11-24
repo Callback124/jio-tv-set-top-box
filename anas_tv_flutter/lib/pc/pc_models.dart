@@ -356,9 +356,12 @@ class PcStreamResolver {
           'clearKey',
           'keys',
           'key',
+          'keyId',
+          'key_id',
         ]) {
           if (data[field] != null) clearKeys.addAll(_parseClearKeys(data[field]));
         }
+        _extractPairedKey(data, clearKeys);
       } catch (e) {
         if (!isHttp(direct.split('|').first.trim())) {
           rethrow;
@@ -386,9 +389,21 @@ class PcStreamResolver {
     }
 
     if (clearKeys.isEmpty) {
-      for (final field in ['all_keys', 'drmLicense', 'drm_license', 'clearkey', 'clearKey', 'key']) {
+      for (final field in [
+        'all_keys',
+        'allKeys',
+        'drmLicense',
+        'drm_license',
+        'clearkey',
+        'clearKey',
+        'keys',
+        'key',
+        'keyId',
+        'key_id',
+      ]) {
         if (raw[field] != null) clearKeys.addAll(_parseClearKeys(raw[field]));
       }
+      _extractPairedKey(raw, clearKeys);
     }
 
     if (streamUrl == null || !isHttp(streamUrl)) {
@@ -404,17 +419,38 @@ class PcStreamResolver {
     );
   }
 
+  static void _extractPairedKey(Map<String, dynamic> map, Map<String, String> out) {
+    final kid = (map['keyId'] ?? map['key_id'] ?? map['kid'] ?? '').toString().trim();
+    final key = (map['key'] ?? map['k'] ?? '').toString().trim();
+    bool isBad(String v) =>
+        v.isEmpty ||
+        v.toLowerCase() == 'null' ||
+        v.toLowerCase() == 'none' ||
+        v.toLowerCase() == 'undefined' ||
+        v.contains(':') ||
+        v.contains(',') ||
+        v.startsWith('http');
+    if (!isBad(kid) && !isBad(key)) {
+      out.putIfAbsent(kid, () => key);
+    }
+  }
+
   static Map<String, String> _parseClearKeys(dynamic raw) {
     final pairs = <String, String>{};
+    bool isBadToken(String s) {
+      final l = s.trim().toLowerCase();
+      return l.isEmpty || l == 'null' || l == 'none' || l == 'undefined';
+    }
+
     if (raw is Map) {
-      final kid = (raw['kid'] ?? raw['key_id'] ?? '').toString().trim();
+      final kid = (raw['kid'] ?? raw['key_id'] ?? raw['keyId'] ?? '').toString().trim();
       final key = (raw['key'] ?? raw['k'] ?? '').toString().trim();
-      if (kid.isNotEmpty && key.isNotEmpty) {
+      if (!isBadToken(kid) && !isBadToken(key)) {
         pairs[kid] = key;
       } else {
         raw.forEach((k, v) {
           final ks = k.toString().trim(), vs = v.toString().trim();
-          if (ks.isNotEmpty && vs.isNotEmpty) pairs[ks] = vs;
+          if (!isBadToken(ks) && !isBadToken(vs)) pairs[ks] = vs;
         });
       }
     } else if (raw is List) {
@@ -423,10 +459,10 @@ class PcStreamResolver {
       }
     } else if (raw != null) {
       final str = raw.toString().trim();
-      if (str.isNotEmpty && !str.startsWith('http')) {
+      if (!isBadToken(str) && !str.startsWith('http')) {
         for (final seg in str.split(RegExp(r'[,;\n]'))) {
           final parts = seg.trim().split(':');
-          if (parts.length == 2 && parts[0].trim().isNotEmpty && parts[1].trim().isNotEmpty) {
+          if (parts.length == 2 && !isBadToken(parts[0]) && !isBadToken(parts[1])) {
             pairs[parts[0].trim()] = parts[1].trim();
           }
         }
