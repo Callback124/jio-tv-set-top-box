@@ -216,7 +216,7 @@ class PcLocalPlayerServer {
       final lowerCt = (contentType ?? '').toLowerCase();
       final isMpdRequest = req.method == 'GET' &&
           upRes.statusCode == HttpStatus.ok &&
-          (lowerPath.contains('.mpd') || lowerCt.contains('dash+xml'));
+          (lowerPath.contains('.mpd') || lowerCt.contains('dash+xml') || lowerCt.contains('xml'));
 
       if (isMpdRequest) {
         final rawBytes = await upRes.fold<List<int>>([], (a, b) => a..addAll(b));
@@ -255,16 +255,30 @@ class PcLocalPlayerServer {
   static String _normalizeMpdForPc(String xml, Map<String, String> clearKeys) {
     var out = xml;
 
-    // 1. Prune HEVC representations when H.264 (avc1) exists so WebView2 EME
-    // does not fail with 6001 on systems missing Microsoft HEVC Video Extensions.
-    if (out.contains('avc1.') && (out.contains('hev1.') || out.contains('hvc1.'))) {
+    // 1. Prune HEVC / Dolby Vision (hev1/hvc1/dvh1/dvhe) at both AdaptationSet
+    // and Representation levels whenever H.264 (avc1) exists.
+    if (out.contains('avc1.') &&
+        (out.contains('hev1') || out.contains('hvc1') || out.contains('dvh1') || out.contains('dvhe'))) {
       final prunedHevc = out
           .replaceAll(
-            RegExp(r'<Representation\b[^>]*\bcodecs="[^"]*(?:hev1|hvc1)[^"]*"[^>]*>[\s\S]*?</Representation>'),
+            RegExp(
+              '<AdaptationSet\\b[^>]*\\bcodecs=["\'][^"\']*(?:hev1|hvc1|dvh1|dvhe)[^"\']*["\'][^>]*>[\\s\\S]*?</AdaptationSet>',
+              caseSensitive: false,
+            ),
             '',
           )
           .replaceAll(
-            RegExp(r'<Representation\b[^>]*\bcodecs="[^"]*(?:hev1|hvc1)[^"]*"[^>]*/>'),
+            RegExp(
+              '<Representation\\b[^>]*\\bcodecs=["\'][^"\']*(?:hev1|hvc1|dvh1|dvhe)[^"\']*["\'][^>]*>[\\s\\S]*?</Representation>',
+              caseSensitive: false,
+            ),
+            '',
+          )
+          .replaceAll(
+            RegExp(
+              '<Representation\\b[^>]*\\bcodecs=["\'][^"\']*(?:hev1|hvc1|dvh1|dvhe)[^"\']*["\'][^>]*/>',
+              caseSensitive: false,
+            ),
             '',
           );
       if (prunedHevc.contains('<Representation')) {
@@ -277,21 +291,36 @@ class PcLocalPlayerServer {
         (out.contains('ec-3') || out.contains('ac-3') || out.contains('ac-4'))) {
       final prunedDolby = out
           .replaceAll(
-            RegExp(r'<AdaptationSet\b[^>]*\bcodecs="[^"]*(?:ec-3|ac-3|ac-4)[^"]*"[^>]*>[\s\S]*?</AdaptationSet>'),
+            RegExp(
+              '<AdaptationSet\\b[^>]*\\bcodecs=["\'][^"\']*(?:ec-3|ac-3|ac-4)[^"\']*["\'][^>]*>[\\s\\S]*?</AdaptationSet>',
+              caseSensitive: false,
+            ),
             '',
           )
           .replaceAll(
-            RegExp(r'<Representation\b[^>]*\bcodecs="[^"]*(?:ec-3|ac-3|ac-4)[^"]*"[^>]*>[\s\S]*?</Representation>'),
+            RegExp(
+              '<Representation\\b[^>]*\\bcodecs=["\'][^"\']*(?:ec-3|ac-3|ac-4)[^"\']*["\'][^>]*>[\\s\\S]*?</Representation>',
+              caseSensitive: false,
+            ),
             '',
           )
           .replaceAll(
-            RegExp(r'<Representation\b[^>]*\bcodecs="[^"]*(?:ec-3|ac-3|ac-4)[^"]*"[^>]*/>'),
+            RegExp(
+              '<Representation\\b[^>]*\\bcodecs=["\'][^"\']*(?:ec-3|ac-3|ac-4)[^"\']*["\'][^>]*/>',
+              caseSensitive: false,
+            ),
             '',
           );
       if (prunedDolby.contains('<AdaptationSet') && prunedDolby.contains('<Representation')) {
         out = prunedDolby;
       }
     }
+
+    // Remove any AdaptationSet left with zero Representation tags after codec pruning.
+    out = out.replaceAllMapped(
+      RegExp(r'<AdaptationSet\b[^>]*>[\s\S]*?</AdaptationSet>', caseSensitive: false),
+      (m) => m.group(0)!.contains('<Representation') ? m.group(0)! : '',
+    );
 
     // 3. When static ClearKeys are provided, strip Widevine/PlayReady/FairPlay/Marlin
     // ContentProtection blocks that trigger Shaka 6001 in WebView2, keep cenc mp4protection
@@ -451,6 +480,10 @@ const String _playerHtml = r'''<!DOCTYPE html>
       var proxyOrigin = window.location.origin;
       var userSelectedVideoTrack = false;
       var activeLoadToken = 0;
+      var activeClearKeys = null;
+      var isLoadInFlight = false;
+      var lastMpdDiag = '';
+      var emeCapCache = {};
 
       function postToDart(payload) {
         try {
@@ -473,6 +506,178 @@ const String _playerHtml = r'''<!DOCTYPE html>
           loadScriptSequential(urls, idx + 1, onOk, onErr);
         };
         document.head.appendChild(s);
+      }
+
+      async function isCodecSupportedForClearKey(kind, mime, codecs) {
+        var contentType = codecs ? (mime + '; codecs="' + codecs + '"') : mime;
+        var cacheKey = kind + '|' + contentType;
+        if (Object.prototype.hasOwnProperty.call(emeCapCache, cacheKey)) {
+          return emeCapCache[cacheKey];
+        }
+        try {
+          if (window.MediaSource && typeof MediaSource.isTypeSupported === 'function') {
+            if (!MediaSource.isTypeSupported(contentType)) {
+              emeCapCache[cacheKey] = false;
+              return false;
+            }
+          }
+          var cfg = [{ initDataTypes: ['cenc'] }];
+          if (kind === 'video') {
+            cfg[0].videoCapabilities = [{ contentType: contentType }];
+          } else {
+            cfg[0].audioCapabilities = [{ contentType: contentType }];
+          }
+          await navigator.requestMediaKeySystemAccess('org.w3.clearkey', cfg);
+          emeCapCache[cacheKey] = true;
+          return true;
+        } catch (_) {
+          emeCapCache[cacheKey] = false;
+          return false;
+        }
+      }
+
+      async function filterMpdDomForWebView2(xmlText) {
+        try {
+          var parser = new DOMParser();
+          var doc = parser.parseFromString(xmlText, 'application/xml');
+          if (!doc || doc.querySelector('parsererror')) {
+            lastMpdDiag = 'mpd-parse-err';
+            return xmlText;
+          }
+
+          var allCodecs = [];
+          var cpSchemes = [];
+          var pruned = [];
+          var clearKeyUuid = 'e2719d58-a985-b3c9-781a-b030af78d30e';
+          var periods = Array.prototype.slice.call(doc.getElementsByTagName('Period'));
+          if (!periods.length && doc.documentElement) {
+            periods = [doc.documentElement];
+          }
+
+          for (var pi = 0; pi < periods.length; pi++) {
+            var period = periods[pi];
+            var adaptSets = Array.prototype.slice.call(period.getElementsByTagName('AdaptationSet'));
+
+            // Gather EME capability per Representation
+            var videoReps = [];
+            var audioReps = [];
+            for (var ai = 0; ai < adaptSets.length; ai++) {
+              var aset = adaptSets[ai];
+              var aMime = (aset.getAttribute('mimeType') || '').toLowerCase();
+              var aCodecs = aset.getAttribute('codecs') || '';
+              var aContentType = (aset.getAttribute('contentType') || '').toLowerCase();
+              var isText = aContentType === 'text' || aMime.indexOf('text/') === 0 || /stpp|wvtt/i.test(aCodecs);
+
+              if (isText) {
+                var textCps = Array.prototype.slice.call(aset.getElementsByTagName('ContentProtection'));
+                textCps.forEach(function(cp) {
+                  if (cp.parentNode) cp.parentNode.removeChild(cp);
+                });
+                continue;
+              }
+
+              var kind = (aContentType === 'audio' || aMime.indexOf('audio/') === 0) ? 'audio' :
+                         (aContentType === 'video' || aMime.indexOf('video/') === 0) ? 'video' : '';
+              if (!kind) continue;
+
+              var reps = Array.prototype.slice.call(aset.getElementsByTagName('Representation'));
+              for (var ri = 0; ri < reps.length; ri++) {
+                var rep = reps[ri];
+                var rMime = (rep.getAttribute('mimeType') || aMime || (kind + '/mp4')).toLowerCase();
+                var rCodecs = rep.getAttribute('codecs') || aCodecs || '';
+                if (rCodecs && allCodecs.indexOf(rCodecs) < 0) allCodecs.push(rCodecs);
+                var ok = activeClearKeys
+                    ? await isCodecSupportedForClearKey(kind, rMime, rCodecs)
+                    : true;
+                var entry = { aset: aset, rep: rep, codecs: rCodecs, ok: ok };
+                if (kind === 'video') videoReps.push(entry);
+                else audioReps.push(entry);
+              }
+            }
+
+            // Prune unsupported video representations if >= 1 supported video remains
+            if (videoReps.some(function(r) { return r.ok; })) {
+              videoReps.forEach(function(r) {
+                if (!r.ok && r.rep.parentNode) {
+                  r.rep.parentNode.removeChild(r.rep);
+                  if (r.codecs) pruned.push('v:' + r.codecs);
+                }
+              });
+            }
+            // Prune unsupported audio representations if >= 1 supported audio remains
+            // (or even if all fail when at least 1 video works, to prevent 6001)
+            if (audioReps.some(function(r) { return r.ok; }) || videoReps.some(function(r) { return r.ok; })) {
+              audioReps.forEach(function(r) {
+                if (!r.ok && r.rep.parentNode) {
+                  r.rep.parentNode.removeChild(r.rep);
+                  if (r.codecs) pruned.push('a:' + r.codecs);
+                }
+              });
+            }
+
+            // Remove empty AdaptationSets and normalize ContentProtection for ClearKey
+            var updatedAdapts = Array.prototype.slice.call(period.getElementsByTagName('AdaptationSet'));
+            for (var ui = 0; ui < updatedAdapts.length; ui++) {
+              var ua = updatedAdapts[ui];
+              var uMime = (ua.getAttribute('mimeType') || '').toLowerCase();
+              var uCt = (ua.getAttribute('contentType') || '').toLowerCase();
+              var isMedia = uCt === 'video' || uCt === 'audio' || uMime.indexOf('video/') === 0 || uMime.indexOf('audio/') === 0;
+              if (isMedia && ua.getElementsByTagName('Representation').length === 0) {
+                if (ua.parentNode) ua.parentNode.removeChild(ua);
+                continue;
+              }
+
+              var cps = Array.prototype.slice.call(ua.getElementsByTagName('ContentProtection'));
+              var defaultKid = '';
+              cps.forEach(function(cp) {
+                var scheme = (cp.getAttribute('schemeIdUri') || '').trim();
+                var val = (cp.getAttribute('value') || '').trim();
+                var tag = scheme + (val ? ':' + val : '');
+                if (tag && cpSchemes.indexOf(tag) < 0) cpSchemes.push(tag);
+                var dk = cp.getAttribute('cenc:default_KID') || cp.getAttribute('default_KID') || '';
+                if (!defaultKid && dk) defaultKid = dk;
+              });
+
+              if (activeClearKeys && cps.length > 0) {
+                var hasClearKeyNode = false;
+                var mp4ProtNode = null;
+                cps.forEach(function(cp) {
+                  var schemeLow = (cp.getAttribute('schemeIdUri') || '').trim().toLowerCase();
+                  if (schemeLow.indexOf(clearKeyUuid) >= 0) {
+                    hasClearKeyNode = true;
+                  } else if (schemeLow === 'urn:mpeg:dash:mp4protection:2011') {
+                    mp4ProtNode = cp;
+                    var v = (cp.getAttribute('value') || '').toLowerCase();
+                    if (v === 'cbcs') cp.setAttribute('value', 'cenc');
+                    if (defaultKid && !cp.getAttribute('cenc:default_KID') && !cp.getAttribute('default_KID')) {
+                      cp.setAttribute('cenc:default_KID', defaultKid);
+                    }
+                  } else if (schemeLow.indexOf('urn:uuid:') === 0) {
+                    if (cp.parentNode) cp.parentNode.removeChild(cp);
+                  }
+                });
+                if (!hasClearKeyNode && ua.parentNode) {
+                  var mpdNs = (doc.documentElement && doc.documentElement.namespaceURI) || 'urn:mpeg:dash:schema:mpd:2011';
+                  var ckEl = doc.createElementNS(mpdNs, 'ContentProtection');
+                  ckEl.setAttribute('schemeIdUri', 'urn:uuid:' + clearKeyUuid);
+                  ckEl.setAttribute('value', 'ClearKey1.0');
+                  if (mp4ProtNode && mp4ProtNode.parentNode) {
+                    mp4ProtNode.parentNode.insertBefore(ckEl, mp4ProtNode.nextSibling);
+                  } else {
+                    ua.insertBefore(ckEl, ua.firstChild);
+                  }
+                }
+              }
+            }
+          }
+
+          lastMpdDiag = 'codecs=[' + allCodecs.join(',') + '], cp=[' + cpSchemes.join(',') + ']' +
+                        (pruned.length ? ', pruned=[' + pruned.join(',') + ']' : '');
+          return new XMLSerializer().serializeToString(doc);
+        } catch (err) {
+          lastMpdDiag = 'mpd-filter-err:' + (err && err.message ? err.message : err);
+          return xmlText;
+        }
       }
 
       async function probeEmeSupport() {
@@ -585,7 +790,8 @@ const String _playerHtml = r'''<!DOCTYPE html>
           player = new shaka.Player();
           await player.attach(video);
 
-          player.getNetworkingEngine().registerRequestFilter(function(type, request) {
+          var netEngine = player.getNetworkingEngine();
+          netEngine.registerRequestFilter(function(type, request) {
             if (!currentSid || !proxyOrigin) return;
             request.uris = request.uris.map(function(uri) {
               if (!uri) return uri;
@@ -610,6 +816,23 @@ const String _playerHtml = r'''<!DOCTYPE html>
             });
           });
 
+          netEngine.registerResponseFilter(async function(type, response) {
+            if (typeof shaka === 'undefined' || !shaka.net || !shaka.net.NetworkingEngine) return;
+            if (type !== shaka.net.NetworkingEngine.RequestType.MANIFEST) return;
+            if (!response || !response.data) return;
+            try {
+              var text = new TextDecoder('utf-8').decode(new Uint8Array(response.data));
+              if (text.indexOf('<MPD') < 0) {
+                lastMpdDiag = 'hls';
+                return;
+              }
+              var rewritten = await filterMpdDomForWebView2(text);
+              if (rewritten && rewritten !== text) {
+                response.data = new TextEncoder().encode(rewritten).buffer;
+              }
+            } catch (_) {}
+          });
+
           player.addEventListener('buffering', function(ev) {
             postToDart({ type: 'state', state: ev.buffering ? 'buffering' : 'ready' });
           });
@@ -627,6 +850,7 @@ const String _playerHtml = r'''<!DOCTYPE html>
             var err = event && event.detail ? event.detail : event;
             var code = err && err.code ? err.code : '';
             if (code === 7000) return; // LOAD_INTERRUPTED during fast channel change
+            if (isLoadInFlight && code === 6001) return; // enriched diagnostic emitted in anasLoadStream catch
             var msg = (err && err.message) ? err.message : ('Shaka Error ' + code);
             postToDart({ type: 'error', message: 'Shaka Player (' + code + '): ' + msg });
           });
@@ -654,8 +878,10 @@ const String _playerHtml = r'''<!DOCTYPE html>
           postToDart({ type: 'error', message: 'Shaka Player abhi load ho raha hai, retry karein.' });
           return;
         }
+        isLoadInFlight = true;
         try {
           currentSid = cfg.sid;
+          lastMpdDiag = '';
           userSelectedVideoTrack = false;
           postToDart({ type: 'state', state: 'buffering' });
           try { await player.unload(); } catch (_) {}
@@ -663,6 +889,8 @@ const String _playerHtml = r'''<!DOCTYPE html>
           if (token !== activeLoadToken) return;
 
           var clearKeysObj = (cfg.clearKeys && Object.keys(cfg.clearKeys).length > 0) ? cfg.clearKeys : null;
+          activeClearKeys = clearKeysObj;
+
           var configObj = {
             abr: { enabled: true },
             streaming: {
@@ -713,19 +941,21 @@ const String _playerHtml = r'''<!DOCTYPE html>
 
           await player.load(cfg.proxiedUrl, null, cfg.mimeType || undefined);
           if (token !== activeLoadToken) return;
+          isLoadInFlight = false;
           selectHighestVideoTrack();
           emitTracks();
           try { await video.play(); } catch (_) {}
           postToDart({ type: 'state', state: 'ready' });
         } catch (e) {
           if (token !== activeLoadToken) return;
+          isLoadInFlight = false;
           if (e && e.code === 7000) return;
           var code = e && e.code ? (' (' + e.code + ')') : '';
           var baseMsg = (e && e.message) ? e.message : String(e);
           if (e && e.code === 6001) {
             var diag = await probeEmeSupport();
             var keyCount = cfg.clearKeys ? Object.keys(cfg.clearKeys).length : 0;
-            baseMsg += ' [' + diag + ', keys=' + keyCount + ']';
+            baseMsg += ' [' + diag + ', keys=' + keyCount + (lastMpdDiag ? ', ' + lastMpdDiag : '') + ']';
           }
           postToDart({
             type: 'error',
