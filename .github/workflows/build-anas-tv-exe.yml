@@ -1,0 +1,95 @@
+name: Build AnasTV Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'anas_tv_flutter/lib/main_pc.dart'
+      - 'anas_tv_flutter/lib/pc/**'
+      - 'anas_tv_flutter/pubspec.yaml'
+      - '.github/workflows/build-anas-tv-exe.yml'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: anas_tv_flutter
+    shell: pwsh
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Ensure NuGet CLI for WebView2 build
+        run: |
+          if (-not (Get-Command nuget -ErrorAction SilentlyContinue)) {
+            choco install nuget.commandline -y --no-progress
+          }
+
+      - name: Generate Windows project files and set AnasTV branding
+        run: |
+          if (-not (Test-Path "windows")) {
+            flutter create --platforms=windows --org com.anas.tv .
+          }
+          if (Test-Path "windows/CMakeLists.txt") {
+            $cmake = Get-Content "windows/CMakeLists.txt" -Raw
+            $cmake = $cmake -replace 'set\(BINARY_NAME "[^"]+"\)', 'set(BINARY_NAME "AnasTV")'
+            Set-Content "windows/CMakeLists.txt" $cmake -NoNewline
+          }
+          if (Test-Path "windows/runner/main.cpp") {
+            $cpp = Get-Content "windows/runner/main.cpp" -Raw
+            $cpp = $cpp -replace 'L"anas_tv"', 'L"AnasTV"'
+            Set-Content "windows/runner/main.cpp" $cpp -NoNewline
+          }
+          if (Test-Path "windows/runner/Runner.rc") {
+            $rc = Get-Content "windows/runner/Runner.rc" -Raw
+            $rc = $rc -replace '"anas_tv(\.exe)?"', '"AnasTV$1"'
+            Set-Content "windows/runner/Runner.rc" $rc -NoNewline
+          }
+
+      - name: Bundle Jio loader asset
+        run: |
+          New-Item -ItemType Directory -Force -Path "assets/images" | Out-Null
+          if (Test-Path "../public/assets/aistudio/jio_b70b9fac.svg") {
+            Copy-Item "../public/assets/aistudio/jio_b70b9fac.svg" "assets/images/jio_logo.svg" -Force
+          }
+          if (Test-Path "../public/assets/aistudio/JPEG_Download_Jio-Logo-Colour-Navi-Midnight_c9b3d304.jpg") {
+            Copy-Item "../public/assets/aistudio/JPEG_Download_Jio-Logo-Colour-Navi-Midnight_c9b3d304.jpg" "assets/images/jio_loader.jpg" -Force
+          }
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Windows Release EXE (Shaka Player Web)
+        run: flutter build windows --release -t lib/main_pc.dart
+
+      - name: Package AnasTV Windows Release ZIP
+        run: |
+          $releaseDir = if (Test-Path "build/windows/x64/runner/Release") {
+            "build/windows/x64/runner/Release"
+          } else {
+            "build/windows/runner/Release"
+          }
+          if (-not (Test-Path "$releaseDir/AnasTV.exe")) {
+            throw "AnasTV.exe not found in $releaseDir"
+          }
+          Compress-Archive -Path "$releaseDir/*" -DestinationPath "build/AnasTV-Windows-x64.zip" -Force
+
+      - name: Upload AnasTV Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: anas-tv-windows-exe
+          path: anas_tv_flutter/build/AnasTV-Windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14
