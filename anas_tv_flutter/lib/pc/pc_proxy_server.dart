@@ -10,6 +10,7 @@ class PcProxySession {
   final String drmLicenseUrl;
   final Map<String, String> drmHeaders;
   final Map<String, String> clearKeys;
+  final bool decryptMode;
   final PcTrackCryptoStore trackCrypto = PcTrackCryptoStore();
   Uri? lastManifestOrigin;
 
@@ -19,6 +20,7 @@ class PcProxySession {
     required this.drmLicenseUrl,
     required this.drmHeaders,
     this.clearKeys = const {},
+    this.decryptMode = false,
   });
 }
 
@@ -130,7 +132,7 @@ class PcLocalPlayerServer {
         final fallbackUri = latest.lastManifestOrigin!.resolve(
           '${req.uri.path}${req.uri.hasQuery ? '?${req.uri.query}' : ''}',
         );
-        await _forwardStream(req, _latestSid!, latest, fallbackUri, decryptMode: false);
+        await _forwardStream(req, _latestSid!, latest, fallbackUri, decryptMode: latest.decryptMode);
         return;
       }
 
@@ -274,17 +276,19 @@ class PcLocalPlayerServer {
         }
         var segBytes = builder.toBytes();
         if (segBytes.length >= 16) {
-          segBytes = PcCencDecryptor.processInitSegment(
-            segBytes,
-            upstreamUri.path,
-            session.trackCrypto,
-          );
-          segBytes = PcCencDecryptor.processMediaSegment(
-            segBytes,
-            upstreamUri.path,
-            session.trackCrypto,
-            session.clearKeys,
-          );
+          try {
+            segBytes = PcCencDecryptor.processInitSegment(
+              segBytes,
+              upstreamUri.path,
+              session.trackCrypto,
+            );
+            segBytes = PcCencDecryptor.processMediaSegment(
+              segBytes,
+              upstreamUri.path,
+              session.trackCrypto,
+              session.clearKeys,
+            );
+          } catch (_) {}
         }
         req.response.contentLength = segBytes.length;
         req.response.add(segBytes);
@@ -313,14 +317,19 @@ class PcLocalPlayerServer {
       RegExp(r'<ContentProtection\b[^>]*/>', caseSensitive: false),
       '',
     );
+    String rewriteXmlUrl(String raw) {
+      final unescaped = raw.replaceAll('&amp;', '&');
+      final proxied = toDecryptProxyUrl(sid, unescaped);
+      return proxied.replaceAll('&', '&amp;');
+    }
     // Rewrite any explicit http/https BaseURL and SegmentTemplate URLs through /dec/ proxy.
     out = out.replaceAllMapped(
       RegExp(r'<BaseURL([^>]*)>\s*(https?://[^<\s]+)\s*</BaseURL>', caseSensitive: false),
-      (m) => '<BaseURL${m.group(1)}>${toDecryptProxyUrl(sid, m.group(2)!)}</BaseURL>',
+      (m) => '<BaseURL${m.group(1)}>${rewriteXmlUrl(m.group(2)!)}</BaseURL>',
     );
     out = out.replaceAllMapped(
       RegExp(r'\b(initialization|media)=["\x27](https?://[^"\x27]+)["\x27]', caseSensitive: false),
-      (m) => '${m.group(1)}="${toDecryptProxyUrl(sid, m.group(2)!)}"',
+      (m) => '${m.group(1)}="${rewriteXmlUrl(m.group(2)!)}"',
     );
     return out;
   }

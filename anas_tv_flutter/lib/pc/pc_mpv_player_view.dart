@@ -5,16 +5,140 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'pc_models.dart';
 import 'pc_proxy_server.dart';
 
+/// Shared singleton native MPV/VideoController engine for Windows.
+/// Reusing a single native Player + VideoController with software surface rendering
+/// (`enableHardwareAcceleration: false`, `hwdec: no`) prevents ANGLE/Direct3D11 crashes
+/// and Windows FFI disposal race crashes (`Callback invoked after it has been deleted`).
+class _MpvSharedEngine {
+  _MpvSharedEngine._();
+  static final _MpvSharedEngine instance = _MpvSharedEngine._();
+
+  Player? _player;
+  VideoController? _videoController;
+  Future<void>? _initFuture;
+  PcMpvPlayerController? _activeDelegate;
+  final List<StreamSubscription> _subs = [];
+  bool _ready = false;
+
+  bool get isReady => _ready && _player != null && _videoController != null;
+  VideoController? get videoController => _videoController;
+  Player? get player => _player;
+
+  void attach(PcMpvPlayerController delegate) {
+    _activeDelegate = delegate;
+  }
+
+  void detach(PcMpvPlayerController delegate) {
+    if (identical(_activeDelegate, delegate)) {
+      _activeDelegate = null;
+    }
+  }
+
+  Future<void> ensureInitialized() {
+    if (isReady) return Future<void>.value();
+    return _initFuture ??= _initInternal().catchError((e) {
+      _initFuture = null;
+      throw e;
+    });
+  }
+
+  Future<void> _initInternal() async {
+    final player = Player(
+      configuration: const PlayerConfiguration(
+        osc: false,
+        libass: false,
+        logLevel: MPVLogLevel.error,
+      ),
+    );
+    _player = player;
+
+    if (player.platform is NativePlayer) {
+      final native = player.platform as NativePlayer;
+      await native.setProperty('hwdec', 'no').catchError((_) {});
+      await native.setProperty('vd-lavc-threads', '0').catchError((_) {});
+      await native.setProperty('cache', 'yes').catchError((_) {});
+      await native.setProperty('demuxer-max-bytes', '32MiB').catchError((_) {});
+      await native.setProperty('hr-seek', 'no').catchError((_) {});
+    }
+
+    final controller = VideoController(
+      player,
+      configuration: const VideoControllerConfiguration(
+        enableHardwareAcceleration: false,
+      ),
+    );
+    _videoController = controller;
+    await controller.platform.future;
+
+    _subs.add(
+      player.stream.buffering.listen((buffering) {
+        final d = _activeDelegate;
+        if (d == null) return;
+        if (buffering && !player.state.playing) {
+          d.onStateChanged('buffering');
+        } else if (!buffering && player.state.playing) {
+          d.onStateChanged('ready');
+        }
+      }),
+    );
+
+    _subs.add(
+      player.stream.playing.listen((playing) {
+        final d = _activeDelegate;
+        if (d != null && playing) {
+          d.onStateChanged('ready');
+        }
+      }),
+    );
+
+    _subs.add(
+      player.stream.completed.listen((completed) {
+        final d = _activeDelegate;
+        if (d != null && completed) {
+          d.onStateChanged('ended');
+        }
+      }),
+    );
+
+    _subs.add(
+      player.stream.tracks.listen((_) {
+        _activeDelegate?._emitTracks();
+      }),
+    );
+
+    _subs.add(
+      player.stream.track.listen((_) {
+        _activeDelegate?._emitTracks();
+      }),
+    );
+
+    _subs.add(
+      player.stream.error.listen((msg) {
+        final d = _activeDelegate;
+        if (d == null) return;
+        final clean = msg.trim();
+        if (clean.isEmpty) return;
+        if (clean.toLowerCase().contains('failed to open') ||
+            clean.toLowerCase().contains('error') ||
+            clean.toLowerCase().contains('recognized')) {
+          d.onError('HEVC Player error: $clean');
+        }
+      }),
+    );
+
+    _ready = true;
+  }
+}
+
 class PcMpvPlayerController {
   final PcLocalPlayerServer _server = PcLocalPlayerServer.instance;
+  final _MpvSharedEngine _engine = _MpvSharedEngine.instance;
+
   final void Function(String state) onStateChanged;
   final void Function(String message) onError;
   final void Function(List<Map<String, dynamic>> videos, List<Map<String, dynamic>> audios) onTracksChanged;
   final VoidCallback onViewReady;
 
-  Player? _player;
-  VideoController? _videoController;
-  final List<StreamSubscription> _subs = [];
   bool _disposed = false;
   bool _initialized = false;
   String _resizeMode = 'fill';
@@ -30,72 +154,20 @@ class PcMpvPlayerController {
     required this.onViewReady,
   });
 
-  bool get isInitialized => _initialized;
+  bool get isInitialized => _initialized && _engine.isReady;
 
   Future<void> init() async {
-    if (_disposed || _initialized) return;
+    if (_disposed) return;
+    if (isInitialized) {
+      _engine.attach(this);
+      return;
+    }
     try {
       await _server.start();
       if (_disposed) return;
-
-      final player = Player();
-      _player = player;
-      _videoController = VideoController(player);
-
-      if (player.platform is NativePlayer) {
-        final native = player.platform as NativePlayer;
-        await native.setProperty('cache', 'yes').catchError((_) {});
-        await native.setProperty('demuxer-max-bytes', '32MiB').catchError((_) {});
-        await native.setProperty('hr-seek', 'no').catchError((_) {});
-      }
-
-      _subs.add(
-        player.stream.buffering.listen((buffering) {
-          if (_disposed) return;
-          if (buffering && !player.state.playing) {
-            onStateChanged('buffering');
-          } else if (!buffering && player.state.playing) {
-            onStateChanged('ready');
-          }
-        }),
-      );
-
-      _subs.add(
-        player.stream.playing.listen((playing) {
-          if (_disposed) return;
-          if (playing) {
-            onStateChanged('ready');
-          }
-        }),
-      );
-
-      _subs.add(
-        player.stream.completed.listen((completed) {
-          if (_disposed) return;
-          if (completed) onStateChanged('ended');
-        }),
-      );
-
-      _subs.add(
-        player.stream.tracks.listen((_) => _emitTracks()),
-      );
-
-      _subs.add(
-        player.stream.track.listen((_) => _emitTracks()),
-      );
-
-      _subs.add(
-        player.stream.error.listen((msg) {
-          if (_disposed) return;
-          final clean = msg.trim();
-          if (clean.isEmpty) return;
-          if (clean.toLowerCase().contains('failed to open') ||
-              clean.toLowerCase().contains('error')) {
-            onError('HEVC Player error: $clean');
-          }
-        }),
-      );
-
+      await _engine.ensureInitialized();
+      if (_disposed) return;
+      _engine.attach(this);
       _initialized = true;
       onViewReady();
     } catch (e) {
@@ -106,7 +178,7 @@ class PcMpvPlayerController {
   }
 
   void _emitTracks() {
-    final p = _player;
+    final p = _engine.player;
     if (_disposed || p == null) return;
     final stateTracks = p.state.tracks;
     final activeTrack = p.state.track;
@@ -172,10 +244,11 @@ class PcMpvPlayerController {
 
   Future<void> play(PcResolvedPlayback playback) async {
     if (_disposed) return;
-    if (!_initialized) await init();
-    final player = _player;
+    if (!isInitialized) await init();
+    final player = _engine.player;
     if (_disposed || player == null) return;
 
+    _engine.attach(this);
     onStateChanged('buffering');
 
     final normalizedClearKeys = <String, String>{};
@@ -194,6 +267,7 @@ class PcMpvPlayerController {
         drmLicenseUrl: playback.drmLicenseUrl,
         drmHeaders: playback.drmHeaders,
         clearKeys: normalizedClearKeys,
+        decryptMode: true,
       ),
     );
 
@@ -211,7 +285,7 @@ class PcMpvPlayerController {
   }
 
   Future<void> setPaused(bool paused) async {
-    final p = _player;
+    final p = _engine.player;
     if (_disposed || p == null) return;
     if (paused) {
       await p.pause().catchError((_) {});
@@ -222,19 +296,19 @@ class PcMpvPlayerController {
 
   void setResizeMode(String mode) {
     _resizeMode = mode;
-    onViewReady();
+    if (!_disposed) onViewReady();
   }
 
   Future<void> setVolume(double volume, {bool? muted}) async {
     _volume = volume.clamp(0.0, 1.0);
     if (muted != null) _muted = muted;
-    final p = _player;
+    final p = _engine.player;
     if (_disposed || p == null) return;
     await p.setVolume(_muted ? 0.0 : (_volume * 100.0)).catchError((_) {});
   }
 
   Future<void> selectVideoVariant(int id) async {
-    final p = _player;
+    final p = _engine.player;
     if (_disposed || p == null) return;
     if (id < 0) {
       await p.setVideoTrack(VideoTrack.auto()).catchError((_) {});
@@ -246,7 +320,7 @@ class PcMpvPlayerController {
   }
 
   Future<void> selectAudioTrack(String language, String role) async {
-    final p = _player;
+    final p = _engine.player;
     if (_disposed || p == null) return;
     for (final t in _lastAudioTracks) {
       if ((role.isNotEmpty && t.id == role) ||
@@ -258,14 +332,14 @@ class PcMpvPlayerController {
   }
 
   Future<void> stop() async {
-    final p = _player;
-    if (_disposed || p == null) return;
+    final p = _engine.player;
+    if (p == null) return;
     await p.stop().catchError((_) {});
   }
 
   Widget buildView() {
-    final controller = _videoController;
-    if (!_initialized || controller == null) {
+    final controller = _engine.videoController;
+    if (!_initialized || !_engine.isReady || controller == null) {
       return const ColoredBox(color: Colors.black);
     }
     final fit = _resizeMode == 'fit'
@@ -286,15 +360,7 @@ class PcMpvPlayerController {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
-    for (final s in _subs) {
-      await s.cancel().catchError((_) {});
-    }
-    _subs.clear();
-    final p = _player;
-    _player = null;
-    _videoController = null;
-    if (p != null) {
-      await p.dispose().catchError((_) {});
-    }
+    _engine.detach(this);
+    await stop();
   }
 }

@@ -946,6 +946,7 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
   late final PcShakaPlayerController _shaka;
   PcMpvPlayerController? _mpv;
   bool _useMpvEngine = false;
+  bool _fallbackInProgress = false;
   bool _closing = false;
   PcResolvedPlayback? _lastResolvedPlayback;
   late List<PcChannel> _channels;
@@ -1021,7 +1022,7 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
         });
       },
       onHevcUnsupported: (diag) {
-        if (!mounted) return;
+        if (!mounted || _closing || _useMpvEngine || _fallbackInProgress) return;
         _fallbackToMpv();
       },
       onError: (msg) {
@@ -1074,32 +1075,47 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
 
   Future<void> _fallbackToMpv() async {
     final resolved = _lastResolvedPlayback;
-    if (!mounted || resolved == null) return;
+    if (!mounted || _closing || _useMpvEngine || _fallbackInProgress || resolved == null) return;
+    _fallbackInProgress = true;
     final reqSeq = _playRequestSeq;
-    await _shaka.stop().catchError((_) {});
-    if (!mounted || reqSeq != _playRequestSeq) return;
+    try {
+      await _shaka.stop().catchError((_) {});
+      if (!mounted || _closing || reqSeq != _playRequestSeq) return;
 
-    final mpv = _ensureMpv();
-    mpv.setResizeMode(_resizeMode);
-    mpv.setVolume(1.0, muted: _muted);
-    setState(() {
-      _useMpvEngine = true;
-      _loading = true;
-      _error = null;
-      _videoTracks = [];
-      _audioTracks = [];
-    });
+      final mpv = _ensureMpv();
+      await mpv.init();
+      if (!mounted || _closing || reqSeq != _playRequestSeq) return;
 
-    _watchdog?.cancel();
-    _watchdog = Timer(const Duration(seconds: 28), () {
-      if (!mounted || reqSeq != _playRequestSeq || !_loading) return;
+      mpv.setResizeMode(_resizeMode);
+      await mpv.setVolume(1.0, muted: _muted);
+      setState(() {
+        _useMpvEngine = true;
+        _loading = true;
+        _error = null;
+        _videoTracks = [];
+        _audioTracks = [];
+      });
+
+      _watchdog?.cancel();
+      _watchdog = Timer(const Duration(seconds: 28), () {
+        if (!mounted || reqSeq != _playRequestSeq || !_loading) return;
+        setState(() {
+          _loading = false;
+          _error = 'HEVC playback timeout (28s). Stream respond nahi kar rahi.';
+        });
+      });
+
+      await mpv.play(resolved);
+    } catch (e) {
+      if (!mounted || reqSeq != _playRequestSeq) return;
+      _watchdog?.cancel();
       setState(() {
         _loading = false;
-        _error = 'HEVC playback timeout (28s). Stream respond nahi kar rahi.';
+        _error = 'HEVC playback failed: $e';
       });
-    });
-
-    await mpv.play(resolved);
+    } finally {
+      _fallbackInProgress = false;
+    }
   }
 
   void _closePlayer() {
@@ -1193,6 +1209,7 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
     final target = _channels[targetIndex];
     _watchdog?.cancel();
     _lastResolvedPlayback = null;
+    _fallbackInProgress = false;
     if (_useMpvEngine) {
       await _mpv?.stop().catchError((_) {});
     }
@@ -1689,7 +1706,9 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
             child: Stack(
               fit: StackFit.expand,
               children: [
-                if (_useMpvEngine && _mpv != null) _mpv!.buildView() else _shaka.buildView(),
+                Positioned.fill(child: _shaka.buildView()),
+                if (_useMpvEngine && _mpv != null && _mpv!.isInitialized)
+                  Positioned.fill(child: _mpv!.buildView()),
                 if (_loading) const Center(child: PcBrandCircularLoader(size: 84)),
                 if (_error != null)
                   Center(
