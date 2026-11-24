@@ -75,14 +75,15 @@ jobs:
       - name: Build Windows Release EXE (Shaka Player Web)
         run: flutter build windows --release -t lib/main_pc.dart
 
-      - name: Package AnasTV Windows Release ZIP
+      - name: Package Single Standalone AnasTV.exe
         run: |
           $releaseDir = if (Test-Path "build/windows/x64/runner/Release") {
-            "build/windows/x64/runner/Release"
+            (Resolve-Path "build/windows/x64/runner/Release").Path
           } else {
-            "build/windows/runner/Release"
+            (Resolve-Path "build/windows/runner/Release").Path
           }
-          if (-not (Test-Path "$releaseDir/AnasTV.exe")) {
+
+          if (-not (Test-Path "$releaseDir\AnasTV.exe")) {
             $fallbackExe = Get-ChildItem -Path $releaseDir -Filter "*.exe" | Select-Object -First 1
             if ($fallbackExe) {
               Rename-Item -Path $fallbackExe.FullName -NewName "AnasTV.exe"
@@ -90,12 +91,102 @@ jobs:
               throw "AnasTV.exe not found in $releaseDir"
             }
           }
-          Compress-Archive -Path "$releaseDir/*" -DestinationPath "build/AnasTV-Windows-x64.zip" -Force
 
-      - name: Upload AnasTV Windows EXE
+          # Bundle Visual C++ x64 runtime DLLs so fresh Windows PCs never crash on startup
+          foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {
+            $sysDll = Join-Path $env:WINDIR "System32\$dll"
+            $dstDll = Join-Path $releaseDir $dll
+            if ((Test-Path $sysDll) -and (-not (Test-Path $dstDll))) {
+              Copy-Item $sysDll $dstDll -Force
+            }
+          }
+
+          # Ensure 7z CLI is available
+          $sevenZip = Get-Command 7z -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+          if (-not $sevenZip -and (Test-Path "C:\Program Files\7-Zip\7z.exe")) {
+            $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+          }
+          if (-not $sevenZip) {
+            choco install 7zip -y --no-progress
+            $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+          }
+          if (-not (Test-Path $sevenZip)) {
+            throw "7z.exe not found"
+          }
+
+          $sfxWork = Join-Path $env:RUNNER_TEMP "anas_sfx"
+          New-Item -ItemType Directory -Force -Path $sfxWork | Out-Null
+
+          $extra7z = Join-Path $sfxWork "7z_extra.7z"
+          $sfxUrls = @(
+            "https://www.7-zip.org/a/7z2409-extra.7z",
+            "https://www.7-zip.org/a/7z2408-extra.7z",
+            "https://www.7-zip.org/a/7z2301-extra.7z"
+          )
+          $downloaded = $false
+          foreach ($u in $sfxUrls) {
+            try {
+              Invoke-WebRequest -Uri $u -OutFile $extra7z -UseBasicParsing
+              if ((Test-Path $extra7z) -and ((Get-Item $extra7z).Length -gt 100000)) {
+                $downloaded = $true
+                break
+              }
+            } catch {}
+          }
+          if (-not $downloaded) {
+            throw "Failed to download 7-Zip Extra SFX module"
+          }
+
+          & $sevenZip e $extra7z "-o$sfxWork" "7zS.sfx" -y
+          $sfxStub = Join-Path $sfxWork "7zS.sfx"
+          if (-not (Test-Path $sfxStub)) {
+            throw "7zS.sfx not found after extracting extra archive"
+          }
+
+          # Compress Release directory using LZMA (required by 7zS.sfx)
+          $payload7z = Join-Path $sfxWork "payload.7z"
+          if (Test-Path $payload7z) { Remove-Item $payload7z -Force }
+          Push-Location $releaseDir
+          try {
+            & $sevenZip a -t7z -m0=LZMA -mx=5 $payload7z * -r
+          } finally {
+            Pop-Location
+          }
+          if (-not (Test-Path $payload7z)) {
+            throw "payload.7z creation failed"
+          }
+
+          # Write UTF-8 (no BOM) config for silent temp extraction + auto cleanup
+          $cfgPath = Join-Path $sfxWork "config.txt"
+          $cfgText = ";!@Install@!UTF-8!`r`nTitle=`"AnasTV`"`r`nProgress=`"no`"`r`nRunProgram=`"AnasTV.exe`"`r`n;!@InstallEnd@!`r`n"
+          [System.IO.File]::WriteAllText($cfgPath, $cfgText, [System.Text.UTF8Encoding]::new($false))
+
+          $outExe = Join-Path (Resolve-Path "build").Path "AnasTV.exe"
+          if (Test-Path $outExe) { Remove-Item $outExe -Force }
+          $outStream = [System.IO.File]::Create($outExe)
+          try {
+            foreach ($part in @($sfxStub, $cfgPath, $payload7z)) {
+              $inStream = [System.IO.File]::OpenRead($part)
+              try {
+                $inStream.CopyTo($outStream)
+              } finally {
+                $inStream.Dispose()
+              }
+            }
+          } finally {
+            $outStream.Dispose()
+          }
+          if (-not (Test-Path $outExe)) {
+            throw "Failed to assemble single standalone AnasTV.exe"
+          }
+          $exeMb = [math]::Round((Get-Item $outExe).Length / 1MB, 2)
+          Write-Host "Built single standalone AnasTV.exe ($exeMb MB)"
+
+      - name: Upload Single Standalone AnasTV.exe
         uses: actions/upload-artifact@v4
         with:
-          name: anas-tv-windows-exe
-          path: anas_tv_flutter/build/AnasTV-Windows-x64.zip
+          name: AnasTV-Windows-Single-EXE
+          path: anas_tv_flutter/build/AnasTV.exe
+          compression-level: 0
           if-no-files-found: error
           retention-days: 14

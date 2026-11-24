@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'pc_models.dart';
+import 'pc_mpv_player_view.dart';
 import 'pc_shaka_player_view.dart';
 
 class AnasTvPcApp extends StatelessWidget {
@@ -943,6 +944,10 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
 
   final FocusNode _playerFocus = FocusNode();
   late final PcShakaPlayerController _shaka;
+  PcMpvPlayerController? _mpv;
+  bool _useMpvEngine = false;
+  bool _closing = false;
+  PcResolvedPlayback? _lastResolvedPlayback;
   late List<PcChannel> _channels;
 
   late int _playingIndex;
@@ -1003,20 +1008,24 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
         if (mounted) setState(() {});
       },
       onStateChanged: (state) {
-        if (!mounted) return;
+        if (!mounted || _useMpvEngine) return;
         final isBuffering = state == 'idle' || state == 'buffering';
         if (_loading != isBuffering) setState(() => _loading = isBuffering);
         if (state == 'ready' || state == 'ended') _watchdog?.cancel();
       },
       onTracksChanged: (videos, audios) {
-        if (!mounted) return;
+        if (!mounted || _useMpvEngine) return;
         setState(() {
           _videoTracks = videos;
           _audioTracks = audios;
         });
       },
-      onError: (msg) {
+      onHevcUnsupported: (diag) {
         if (!mounted) return;
+        _fallbackToMpv();
+      },
+      onError: (msg) {
+        if (!mounted || _useMpvEngine) return;
         _watchdog?.cancel();
         setState(() {
           _loading = false;
@@ -1030,6 +1039,75 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
     _startChannelStream(_playingIndex, showBanner: true);
   }
 
+  PcMpvPlayerController _ensureMpv() {
+    final existing = _mpv;
+    if (existing != null) return existing;
+    final ctrl = PcMpvPlayerController(
+      onViewReady: () {
+        if (mounted) setState(() {});
+      },
+      onStateChanged: (state) {
+        if (!mounted || !_useMpvEngine) return;
+        final isBuffering = state == 'idle' || state == 'buffering';
+        if (_loading != isBuffering) setState(() => _loading = isBuffering);
+        if (state == 'ready' || state == 'ended') _watchdog?.cancel();
+      },
+      onTracksChanged: (videos, audios) {
+        if (!mounted || !_useMpvEngine) return;
+        setState(() {
+          _videoTracks = videos;
+          _audioTracks = audios;
+        });
+      },
+      onError: (msg) {
+        if (!mounted || !_useMpvEngine) return;
+        _watchdog?.cancel();
+        setState(() {
+          _loading = false;
+          _error = msg;
+        });
+      },
+    );
+    _mpv = ctrl;
+    return ctrl;
+  }
+
+  Future<void> _fallbackToMpv() async {
+    final resolved = _lastResolvedPlayback;
+    if (!mounted || resolved == null) return;
+    final reqSeq = _playRequestSeq;
+    await _shaka.stop().catchError((_) {});
+    if (!mounted || reqSeq != _playRequestSeq) return;
+
+    final mpv = _ensureMpv();
+    mpv.setResizeMode(_resizeMode);
+    mpv.setVolume(1.0, muted: _muted);
+    setState(() {
+      _useMpvEngine = true;
+      _loading = true;
+      _error = null;
+      _videoTracks = [];
+      _audioTracks = [];
+    });
+
+    _watchdog?.cancel();
+    _watchdog = Timer(const Duration(seconds: 28), () {
+      if (!mounted || reqSeq != _playRequestSeq || !_loading) return;
+      setState(() {
+        _loading = false;
+        _error = 'HEVC playback timeout (28s). Stream respond nahi kar rahi.';
+      });
+    });
+
+    await mpv.play(resolved);
+  }
+
+  void _closePlayer() {
+    if (_closing || !mounted) return;
+    _closing = true;
+    Navigator.of(context).maybePop();
+  }
+
   @override
   void dispose() {
     _lookaheadSeq++;
@@ -1040,6 +1118,7 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
     _digitCommitTimer?.cancel();
     _playerFocus.dispose();
     _shaka.dispose();
+    _mpv?.dispose();
     super.dispose();
   }
 
@@ -1113,11 +1192,16 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
     final reqId = ++_playRequestSeq;
     final target = _channels[targetIndex];
     _watchdog?.cancel();
+    _lastResolvedPlayback = null;
+    if (_useMpvEngine) {
+      await _mpv?.stop().catchError((_) {});
+    }
 
     setState(() {
       _playingIndex = targetIndex;
       _previewIndex = targetIndex;
       _programIndex = 0;
+      _useMpvEngine = false;
       _loading = true;
       _error = null;
       _isPaused = false;
@@ -1142,6 +1226,7 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
     try {
       final resolved = await PcStreamResolver.resolve(target);
       if (!mounted || reqId != _playRequestSeq) return;
+      _lastResolvedPlayback = resolved;
       _shaka.play(resolved);
     } catch (e) {
       if (!mounted || reqId != _playRequestSeq) return;
@@ -1257,7 +1342,7 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
         _scheduleBannerAutoHide();
         return KeyEventResult.handled;
       }
-      Navigator.of(context).pop();
+      _closePlayer();
       return KeyEventResult.handled;
     }
 
@@ -1326,7 +1411,11 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
         _startChannelStream(_previewIndex, showBanner: true);
       } else {
         setState(() => _isPaused = !_isPaused);
-        _shaka.setPaused(_isPaused);
+        if (_useMpvEngine) {
+          _mpv?.setPaused(_isPaused);
+        } else {
+          _shaka.setPaused(_isPaused);
+        }
         _showBanner();
       }
       return KeyEventResult.handled;
@@ -1334,7 +1423,11 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
 
     if (key == LogicalKeyboardKey.keyM) {
       setState(() => _muted = !_muted);
-      _shaka.setVolume(1.0, muted: _muted);
+      if (_useMpvEngine) {
+        _mpv?.setVolume(1.0, muted: _muted);
+      } else {
+        _shaka.setVolume(1.0, muted: _muted);
+      }
       _showBanner();
       return KeyEventResult.handled;
     }
@@ -1407,7 +1500,11 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
           tooltip: _muted ? 'Unmute (M)' : 'Mute (M)',
           onTap: () {
             setState(() => _muted = !_muted);
-            _shaka.setVolume(1.0, muted: _muted);
+            if (_useMpvEngine) {
+              _mpv?.setVolume(1.0, muted: _muted);
+            } else {
+              _shaka.setVolume(1.0, muted: _muted);
+            }
             _scheduleBannerAutoHide();
           },
         ),
@@ -1493,17 +1590,28 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
                     hoverColor: Colors.white.withValues(alpha: 0.14),
                     onTap: () {
                       if (kind == _PcPickerKind.audio) {
-                        _shaka.selectAudioTrack(
-                          (item['language'] ?? '').toString(),
-                          (item['role'] ?? '').toString(),
-                        );
+                        final lang = (item['language'] ?? '').toString();
+                        final role = (item['role'] ?? '').toString();
+                        if (_useMpvEngine) {
+                          _mpv?.selectAudioTrack(lang, role);
+                        } else {
+                          _shaka.selectAudioTrack(lang, role);
+                        }
                       } else if (kind == _PcPickerKind.quality) {
                         final id = (item['id'] as num?)?.toInt() ?? -1;
-                        _shaka.selectVideoVariant(id);
+                        if (_useMpvEngine) {
+                          _mpv?.selectVideoVariant(id);
+                        } else {
+                          _shaka.selectVideoVariant(id);
+                        }
                       } else {
                         final mode = (item['mode'] ?? 'fill').toString();
                         setState(() => _resizeMode = mode);
-                        _shaka.setResizeMode(mode);
+                        if (_useMpvEngine) {
+                          _mpv?.setResizeMode(mode);
+                        } else {
+                          _shaka.setResizeMode(mode);
+                        }
                       }
                       setState(() => _openPicker = null);
                       _scheduleBannerAutoHide();
@@ -1581,7 +1689,7 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
             child: Stack(
               fit: StackFit.expand,
               children: [
-                _shaka.buildView(),
+                if (_useMpvEngine && _mpv != null) _mpv!.buildView() else _shaka.buildView(),
                 if (_loading) const Center(child: PcBrandCircularLoader(size: 84)),
                 if (_error != null)
                   Center(
@@ -1615,7 +1723,7 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
                               ),
                               const SizedBox(width: 12),
                               TextButton(
-                                onPressed: () => Navigator.of(context).pop(),
+                                onPressed: _closePlayer,
                                 child: const Text('Back to channels'),
                               ),
                             ],
@@ -1639,7 +1747,7 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
                           _squareIconButton(
                             icon: Icons.arrow_back_rounded,
                             tooltip: 'Back (Esc)',
-                            onTap: () => Navigator.of(context).pop(),
+                            onTap: _closePlayer,
                           ),
                           const SizedBox(width: 12),
                           Text(

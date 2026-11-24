@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+import 'pc_cenc_decryptor.dart';
 
 class PcProxySession {
   final String streamUrl;
@@ -8,6 +10,7 @@ class PcProxySession {
   final String drmLicenseUrl;
   final Map<String, String> drmHeaders;
   final Map<String, String> clearKeys;
+  final PcTrackCryptoStore trackCrypto = PcTrackCryptoStore();
   Uri? lastManifestOrigin;
 
   PcProxySession({
@@ -28,6 +31,7 @@ class PcLocalPlayerServer {
   final HttpClient _httpClient = HttpClient()
     ..connectionTimeout = const Duration(seconds: 15)
     ..idleTimeout = const Duration(seconds: 30)
+    ..maxConnectionsPerHost = 12
     ..badCertificateCallback = (_, __, ___) => true;
 
   final Map<int, PcProxySession> _sessions = {};
@@ -62,14 +66,18 @@ class PcLocalPlayerServer {
     return sid;
   }
 
-  String toProxyUrl(int sid, String rawUrl) {
+  String toProxyUrl(int sid, String rawUrl) => _buildProxyUrl('p', sid, rawUrl);
+
+  String toDecryptProxyUrl(int sid, String rawUrl) => _buildProxyUrl('dec', sid, rawUrl);
+
+  String _buildProxyUrl(String prefix, int sid, String rawUrl) {
     final uri = Uri.tryParse(rawUrl);
     if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
       return rawUrl;
     }
     final cleanPath = uri.path.isEmpty ? '/' : (uri.path.startsWith('/') ? uri.path : '/${uri.path}');
     final query = uri.hasQuery ? '?${uri.query}' : '';
-    return 'http://127.0.0.1:$port/p/$sid/${uri.scheme}/${uri.authority}$cleanPath$query';
+    return 'http://127.0.0.1:$port/$prefix/$sid/${uri.scheme}/${uri.authority}$cleanPath$query';
   }
 
   String toDrmProxyUrl(int sid, String licenseUrl) {
@@ -84,48 +92,59 @@ class PcLocalPlayerServer {
   }
 
   Future<void> _handleRequest(HttpRequest req) async {
-    _applyCors(req.response);
-    if (req.method == 'OPTIONS') {
-      req.response.statusCode = HttpStatus.noContent;
+    try {
+      _applyCors(req.response);
+      if (req.method == 'OPTIONS') {
+        req.response.statusCode = HttpStatus.noContent;
+        await req.response.close();
+        return;
+      }
+
+      final path = req.uri.path;
+      if (path == '/player.html') {
+        req.response.statusCode = HttpStatus.ok;
+        req.response.headers.contentType = ContentType.html;
+        req.response.headers.set('Cache-Control', 'no-store');
+        req.response.write(_playerHtml);
+        await req.response.close();
+        return;
+      }
+
+      if (path.startsWith('/drm/')) {
+        await _handleDrmProxy(req);
+        return;
+      }
+
+      if (path.startsWith('/p/')) {
+        await _handleStreamProxy(req, decryptMode: false);
+        return;
+      }
+
+      if (path.startsWith('/dec/')) {
+        await _handleStreamProxy(req, decryptMode: true);
+        return;
+      }
+
+      final latest = _latestSid != null ? _sessions[_latestSid] : null;
+      if (latest != null && latest.lastManifestOrigin != null) {
+        final fallbackUri = latest.lastManifestOrigin!.resolve(
+          '${req.uri.path}${req.uri.hasQuery ? '?${req.uri.query}' : ''}',
+        );
+        await _forwardStream(req, _latestSid!, latest, fallbackUri, decryptMode: false);
+        return;
+      }
+
+      req.response.statusCode = HttpStatus.notFound;
       await req.response.close();
-      return;
+    } catch (_) {
+      try {
+        await req.response.close();
+      } catch (_) {}
     }
-
-    final path = req.uri.path;
-    if (path == '/player.html') {
-      req.response.statusCode = HttpStatus.ok;
-      req.response.headers.contentType = ContentType.html;
-      req.response.headers.set('Cache-Control', 'no-store');
-      req.response.write(_playerHtml);
-      await req.response.close();
-      return;
-    }
-
-    if (path.startsWith('/drm/')) {
-      await _handleDrmProxy(req);
-      return;
-    }
-
-    if (path.startsWith('/p/')) {
-      await _handleStreamProxy(req);
-      return;
-    }
-
-    final latest = _latestSid != null ? _sessions[_latestSid] : null;
-    if (latest != null && latest.lastManifestOrigin != null) {
-      final fallbackUri = latest.lastManifestOrigin!.resolve(
-        '${req.uri.path}${req.uri.hasQuery ? '?${req.uri.query}' : ''}',
-      );
-      await _forwardStream(req, _latestSid!, latest, fallbackUri);
-      return;
-    }
-
-    req.response.statusCode = HttpStatus.notFound;
-    await req.response.close();
   }
 
-  Future<void> _handleStreamProxy(HttpRequest req) async {
-    // Format: /p/<sid>/<scheme>/<authority>/<restPath>
+  Future<void> _handleStreamProxy(HttpRequest req, {required bool decryptMode}) async {
+    // Format: /p/<sid>/<scheme>/<authority>/<restPath> or /dec/<sid>/...
     final segments = req.uri.pathSegments;
     if (segments.length < 4) {
       req.response.statusCode = HttpStatus.badRequest;
@@ -154,15 +173,16 @@ class PcLocalPlayerServer {
     final upstreamUri = Uri.parse('$scheme://$authority$restPath$query');
     session.lastManifestOrigin = Uri.parse('$scheme://$authority');
 
-    await _forwardStream(req, sid, session, upstreamUri);
+    await _forwardStream(req, sid, session, upstreamUri, decryptMode: decryptMode);
   }
 
   Future<void> _forwardStream(
     HttpRequest req,
     int sid,
     PcProxySession session,
-    Uri upstreamUri,
-  ) async {
+    Uri upstreamUri, {
+    required bool decryptMode,
+  }) async {
     try {
       final outReq = await _httpClient.openUrl(req.method, upstreamUri);
       outReq.followRedirects = false;
@@ -191,7 +211,10 @@ class PcLocalPlayerServer {
           await upRes.drain<void>();
           final resolved = upstreamUri.resolve(loc);
           req.response.statusCode = upRes.statusCode;
-          req.response.headers.set(HttpHeaders.locationHeader, toProxyUrl(sid, resolved.toString()));
+          req.response.headers.set(
+            HttpHeaders.locationHeader,
+            decryptMode ? toDecryptProxyUrl(sid, resolved.toString()) : toProxyUrl(sid, resolved.toString()),
+          );
           await req.response.close();
           return;
         }
@@ -222,7 +245,9 @@ class PcLocalPlayerServer {
         final rawBytes = await upRes.fold<List<int>>([], (a, b) => a..addAll(b));
         final rawXml = utf8.decode(rawBytes, allowMalformed: true);
         if (rawXml.contains('<MPD')) {
-          final normalizedXml = _normalizeMpdForPc(rawXml, session.clearKeys);
+          final normalizedXml = decryptMode
+              ? _normalizeMpdForClearMpv(rawXml, sid, upstreamUri)
+              : _normalizeMpdForPc(rawXml, session.clearKeys);
           final outBytes = utf8.encode(normalizedXml);
           req.response.headers.contentType = ContentType('application', 'dash+xml', charset: 'utf-8');
           req.response.contentLength = outBytes.length;
@@ -236,6 +261,37 @@ class PcLocalPlayerServer {
         return;
       }
 
+      final isSegmentCandidate = decryptMode &&
+          req.method == 'GET' &&
+          (upRes.statusCode == HttpStatus.ok || upRes.statusCode == HttpStatus.partialContent) &&
+          session.clearKeys.isNotEmpty &&
+          !lowerPath.endsWith('.m3u8');
+
+      if (isSegmentCandidate) {
+        final builder = BytesBuilder(copy: false);
+        await for (final chunk in upRes) {
+          builder.add(chunk);
+        }
+        var segBytes = builder.toBytes();
+        if (segBytes.length >= 16) {
+          segBytes = PcCencDecryptor.processInitSegment(
+            segBytes,
+            upstreamUri.path,
+            session.trackCrypto,
+          );
+          segBytes = PcCencDecryptor.processMediaSegment(
+            segBytes,
+            upstreamUri.path,
+            session.trackCrypto,
+            session.clearKeys,
+          );
+        }
+        req.response.contentLength = segBytes.length;
+        req.response.add(segBytes);
+        await req.response.close();
+        return;
+      }
+
       await upRes.pipe(req.response);
     } catch (e) {
       try {
@@ -244,6 +300,29 @@ class PcLocalPlayerServer {
         await req.response.close();
       } catch (_) {}
     }
+  }
+
+  String _normalizeMpdForClearMpv(String xml, int sid, Uri manifestUri) {
+    var out = xml;
+    // Strip all ContentProtection tags so libmpv/FFmpeg reads the decrypted segments cleanly.
+    out = out.replaceAll(
+      RegExp(r'<ContentProtection\b[^>]*>[\s\S]*?</ContentProtection>', caseSensitive: false),
+      '',
+    );
+    out = out.replaceAll(
+      RegExp(r'<ContentProtection\b[^>]*/>', caseSensitive: false),
+      '',
+    );
+    // Rewrite any explicit http/https BaseURL and SegmentTemplate URLs through /dec/ proxy.
+    out = out.replaceAllMapped(
+      RegExp(r'<BaseURL([^>]*)>\s*(https?://[^<\s]+)\s*</BaseURL>', caseSensitive: false),
+      (m) => '<BaseURL${m.group(1)}>${toDecryptProxyUrl(sid, m.group(2)!)}</BaseURL>',
+    );
+    out = out.replaceAllMapped(
+      RegExp(r'\b(initialization|media)=["\x27](https?://[^"\x27]+)["\x27]', caseSensitive: false),
+      (m) => '${m.group(1)}="${toDecryptProxyUrl(sid, m.group(2)!)}"',
+    );
+    return out;
   }
 
   static String _formatUuid(String hex) {
@@ -483,6 +562,7 @@ const String _playerHtml = r'''<!DOCTYPE html>
       var activeClearKeys = null;
       var isLoadInFlight = false;
       var lastMpdDiag = '';
+      var lastMpdHevcUnsupported = false;
       var emeCapCache = {};
 
       function postToDart(payload) {
@@ -671,6 +751,11 @@ const String _playerHtml = r'''<!DOCTYPE html>
             }
           }
 
+          var hevcOnly = videoReps.length > 0 &&
+                         videoReps.some(function(r) { return /(hvc1|hev1)/i.test(r.codecs || ''); }) &&
+                         !videoReps.some(function(r) { return /avc1/i.test(r.codecs || ''); }) &&
+                         !videoReps.some(function(r) { return r.ok; });
+          lastMpdHevcUnsupported = hevcOnly;
           lastMpdDiag = 'codecs=[' + allCodecs.join(',') + '], cp=[' + cpSchemes.join(',') + ']' +
                         (pruned.length ? ', pruned=[' + pruned.join(',') + ']' : '');
           return new XMLSerializer().serializeToString(doc);
@@ -893,6 +978,7 @@ const String _playerHtml = r'''<!DOCTYPE html>
         try {
           currentSid = cfg.sid;
           lastMpdDiag = '';
+          lastMpdHevcUnsupported = false;
           userSelectedVideoTrack = false;
           postToDart({ type: 'state', state: 'buffering' });
           try { await player.unload(); } catch (_) {}
@@ -964,11 +1050,18 @@ const String _playerHtml = r'''<!DOCTYPE html>
           var code = e && e.code ? (' (' + e.code + ')') : '';
           var baseMsg = (e && e.message) ? e.message : String(e);
           if (e && e.code === 6001) {
+            var isHevcStream = lastMpdHevcUnsupported ||
+                (lastMpdDiag && /(hvc1|hev1)/i.test(lastMpdDiag) && !/avc1/i.test(lastMpdDiag));
+            if (isHevcStream) {
+              var diagInfo = await probeEmeSupport(lastMpdDiag);
+              postToDart({
+                type: 'hevcUnsupported',
+                diag: diagInfo + (lastMpdDiag ? ', ' + lastMpdDiag : '')
+              });
+              return;
+            }
             var diag = await probeEmeSupport(lastMpdDiag);
             var keyCount = cfg.clearKeys ? Object.keys(cfg.clearKeys).length : 0;
-            if (lastMpdDiag && /(hvc1|hev1)/i.test(lastMpdDiag) && !/avc1/i.test(lastMpdDiag)) {
-              baseMsg = 'HEVC (H.265) video is PC par supported nahi hai — Microsoft Store se "HEVC Video Extensions" install karein ya is channel ka H.264/SD version chalayein. (' + baseMsg + ')';
-            }
             baseMsg += ' [' + diag + ', keys=' + keyCount + (lastMpdDiag ? ', ' + lastMpdDiag : '') + ']';
           }
           postToDart({

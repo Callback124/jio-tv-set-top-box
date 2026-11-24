@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
@@ -1016,19 +1015,20 @@ class _PcProgramPosterState extends State<PcProgramPoster> {
     final url = urls[_attempt];
     return ColoredBox(
       color: Colors.white,
-      child: CachedNetworkImage(
-        imageUrl: url,
-        httpHeaders: pcImageHeadersFor(url),
+      child: Image.network(
+        url,
+        headers: pcImageHeadersFor(url),
         fit: BoxFit.fill,
         width: double.infinity,
         height: double.infinity,
-        memCacheWidth: 640,
-        memCacheHeight: 360,
-        fadeInDuration: Duration.zero,
-        fadeOutDuration: Duration.zero,
-        useOldImageOnUrlChange: true,
-        placeholder: (_, __) => _placeholder(),
-        errorWidget: (_, __, ___) {
+        cacheWidth: 640,
+        cacheHeight: 360,
+        gaplessPlayback: true,
+        loadingBuilder: (_, child, progress) {
+          if (progress == null) return child;
+          return _placeholder();
+        },
+        errorBuilder: (_, __, ___) {
           if (_attempt + 1 < urls.length) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (mounted) setState(() => _attempt++);
@@ -1089,16 +1089,14 @@ class _PcChannelLogoState extends State<PcChannelLogo> {
       return const Center(child: Icon(Icons.tv_rounded, size: 28, color: Color(0xFF163842)));
     }
     final url = urls[_attempt];
-    return CachedNetworkImage(
-      imageUrl: url,
-      httpHeaders: pcImageHeadersFor(url),
+    return Image.network(
+      url,
+      headers: pcImageHeadersFor(url),
       fit: BoxFit.contain,
-      memCacheWidth: 160,
-      memCacheHeight: 160,
-      fadeInDuration: Duration.zero,
-      fadeOutDuration: Duration.zero,
-      useOldImageOnUrlChange: true,
-      errorWidget: (_, __, ___) {
+      cacheWidth: 160,
+      cacheHeight: 160,
+      gaplessPlayback: true,
+      errorBuilder: (_, __, ___) {
         if (_attempt + 1 < urls.length) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) setState(() => _attempt++);

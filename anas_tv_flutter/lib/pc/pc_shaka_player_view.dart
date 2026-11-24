@@ -9,6 +9,19 @@ import 'pc_proxy_server.dart';
 
 class PcShakaPlayerController {
   static bool _envInitialized = false;
+  static Future<void> _lifecycleQueue = Future<void>.value();
+
+  static Future<T> _serialize<T>(Future<T> Function() action) {
+    final completer = Completer<T>();
+    _lifecycleQueue = _lifecycleQueue.then((_) async {
+      try {
+        completer.complete(await action());
+      } catch (e, st) {
+        completer.completeError(e, st);
+      }
+    });
+    return completer.future;
+  }
 
   final PcLocalPlayerServer _server = PcLocalPlayerServer.instance;
   final WebviewController _webview = WebviewController();
@@ -16,6 +29,7 @@ class PcShakaPlayerController {
 
   final void Function(String state) onStateChanged;
   final void Function(String message) onError;
+  final void Function(String diag) onHevcUnsupported;
   final void Function(List<Map<String, dynamic>> videos, List<Map<String, dynamic>> audios) onTracksChanged;
   final VoidCallback onViewReady;
 
@@ -30,6 +44,7 @@ class PcShakaPlayerController {
   PcShakaPlayerController({
     required this.onStateChanged,
     required this.onError,
+    required this.onHevcUnsupported,
     required this.onTracksChanged,
     required this.onViewReady,
   });
@@ -51,75 +66,86 @@ class PcShakaPlayerController {
 
   Future<void> init() async {
     try {
-      await _server.start();
-      if (_disposed) return;
+      await _serialize(() async {
+        if (_disposed) return;
+        await _server.start();
+        if (_disposed) return;
 
-      if (!_envInitialized) {
-        _envInitialized = true;
-        final userDataPath = _resolveWebViewUserDataPath();
-        final originFlag = '--unsafely-treat-insecure-origin-as-secure=${_server.origin}';
-        try {
-          await WebviewController.initializeEnvironment(
-            userDataPath: userDataPath,
-            additionalArguments:
-                '--autoplay-policy=no-user-gesture-required --disable-features=HardwareMediaKeyHandling --enable-features=PlatformHEVCDecoderSupport --ignore-gpu-blocklist $originFlag',
-          );
-        } catch (_) {}
-      }
-
-      await _webview.initialize();
-      if (_disposed) return;
-
-      await _webview.setBackgroundColor(Colors.black);
-      await _webview.setPopupWindowPolicy(WebviewPopupWindowPolicy.deny);
-      await _webview.setDefaultContextMenusEnabled(false);
-      await _webview.setZoomControlEnabled(false);
-
-      _subs.add(
-        _webview.webMessage.listen((raw) {
-          if (_disposed) return;
+        if (!_envInitialized) {
+          _envInitialized = true;
+          final userDataPath = _resolveWebViewUserDataPath();
+          final originFlag = '--unsafely-treat-insecure-origin-as-secure=${_server.origin}';
           try {
-            final map = raw is Map
-                ? Map<String, dynamic>.from(raw)
-                : jsonDecode(raw.toString()) as Map<String, dynamic>;
-            final type = (map['type'] ?? '').toString();
-            if (type == 'engineReady') {
-              _engineReady = true;
-              _applyAspectAndVolume();
-              final pending = _pendingPlayback;
-              if (pending != null) {
-                _pendingPlayback = null;
-                _loadIntoShaka(pending);
-              }
-            } else if (type == 'state') {
-              onStateChanged((map['state'] ?? 'idle').toString());
-            } else if (type == 'tracks') {
-              final videos = ((map['videos'] as List?) ?? const [])
-                  .whereType<Map>()
-                  .map((e) => Map<String, dynamic>.from(e))
-                  .toList();
-              final audios = ((map['audios'] as List?) ?? const [])
-                  .whereType<Map>()
-                  .map((e) => Map<String, dynamic>.from(e))
-                  .toList();
-              onTracksChanged(videos, audios);
-            } else if (type == 'error') {
-              onError((map['message'] ?? 'Shaka Player error').toString());
-            }
+            await WebviewController.initializeEnvironment(
+              userDataPath: userDataPath,
+              additionalArguments:
+                  '--autoplay-policy=no-user-gesture-required --disable-features=HardwareMediaKeyHandling --enable-features=PlatformHEVCDecoderSupport --disable-gpu-sandbox $originFlag',
+            );
           } catch (_) {}
-        }),
-      );
+        }
 
-      _subs.add(
-        _webview.onLoadError.listen((status) {
-          if (_disposed) return;
-          onError('WebView2 load error: ${status.name}');
-        }),
-      );
+        if (_disposed) return;
+        await _webview.initialize();
+        if (_disposed) {
+          await _webview.dispose().catchError((_) {});
+          return;
+        }
 
-      _initialized = true;
-      onViewReady();
-      await _webview.loadUrl(_server.playerPageUrl);
+        await _webview.setBackgroundColor(Colors.black).catchError((_) {});
+        await _webview.setPopupWindowPolicy(WebviewPopupWindowPolicy.deny).catchError((_) {});
+        await _webview.setDefaultContextMenusEnabled(false).catchError((_) {});
+        await _webview.setZoomControlEnabled(false).catchError((_) {});
+
+        _subs.add(
+          _webview.webMessage.listen((raw) {
+            if (_disposed) return;
+            try {
+              final map = raw is Map
+                  ? Map<String, dynamic>.from(raw)
+                  : jsonDecode(raw.toString()) as Map<String, dynamic>;
+              final type = (map['type'] ?? '').toString();
+              if (type == 'engineReady') {
+                _engineReady = true;
+                _applyAspectAndVolume();
+                final pending = _pendingPlayback;
+                if (pending != null) {
+                  _pendingPlayback = null;
+                  _loadIntoShaka(pending);
+                }
+              } else if (type == 'state') {
+                onStateChanged((map['state'] ?? 'idle').toString());
+              } else if (type == 'tracks') {
+                final videos = ((map['videos'] as List?) ?? const [])
+                    .whereType<Map>()
+                    .map((e) => Map<String, dynamic>.from(e))
+                    .toList();
+                final audios = ((map['audios'] as List?) ?? const [])
+                    .whereType<Map>()
+                    .map((e) => Map<String, dynamic>.from(e))
+                    .toList();
+                onTracksChanged(videos, audios);
+              } else if (type == 'hevcUnsupported') {
+                onHevcUnsupported((map['diag'] ?? '').toString());
+              } else if (type == 'error') {
+                onError((map['message'] ?? 'Shaka Player error').toString());
+              }
+            } catch (_) {}
+          }),
+        );
+
+        _subs.add(
+          _webview.onLoadError.listen((status) {
+            if (_disposed) return;
+            onError('WebView2 load error: ${status.name}');
+          }),
+        );
+
+        _initialized = true;
+        onViewReady();
+        if (!_disposed) {
+          await _webview.loadUrl(_server.playerPageUrl).catchError((_) {});
+        }
+      });
     } on PlatformException catch (e) {
       if (!_disposed) {
         onError(
@@ -144,7 +170,7 @@ class PcShakaPlayerController {
   }
 
   Future<void> _loadIntoShaka(PcResolvedPlayback playback) async {
-    if (_disposed || !_engineReady) return;
+    if (_disposed || !_engineReady || !_initialized) return;
     final normalizedClearKeys = <String, String>{};
     playback.clearKeys.forEach((k, v) {
       final hexK = _toHexKey(k);
@@ -214,39 +240,40 @@ class PcShakaPlayerController {
   }
 
   Future<void> setPaused(bool paused) async {
-    if (_disposed || !_engineReady) return;
+    if (_disposed || !_engineReady || !_initialized) return;
     await _webview.executeScript('window.anasSetPaused(${paused ? 'true' : 'false'});').catchError((_) {});
   }
 
   Future<void> setResizeMode(String mode) async {
     _resizeMode = mode;
-    if (_disposed || !_engineReady) return;
+    if (_disposed || !_engineReady || !_initialized) return;
     await _webview.executeScript('window.anasSetAspect(${jsonEncode(mode)});').catchError((_) {});
   }
 
   Future<void> setVolume(double volume, {bool? muted}) async {
     _volume = volume.clamp(0.0, 1.0);
     if (muted != null) _muted = muted;
-    if (_disposed || !_engineReady) return;
+    if (_disposed || !_engineReady || !_initialized) return;
     await _webview
         .executeScript('window.anasSetVolume($_volume, ${_muted ? 'true' : 'false'});')
         .catchError((_) {});
   }
 
   Future<void> selectVideoVariant(int id) async {
-    if (_disposed || !_engineReady) return;
+    if (_disposed || !_engineReady || !_initialized) return;
     await _webview.executeScript('window.anasSelectVideoVariant($id);').catchError((_) {});
   }
 
   Future<void> selectAudioTrack(String language, String role) async {
-    if (_disposed || !_engineReady) return;
+    if (_disposed || !_engineReady || !_initialized) return;
     await _webview
         .executeScript('window.anasSelectAudioTrack(${jsonEncode(language)}, ${jsonEncode(role)});')
         .catchError((_) {});
   }
 
   Future<void> stop() async {
-    if (_disposed || !_engineReady) return;
+    _pendingPlayback = null;
+    if (_disposed || !_engineReady || !_initialized) return;
     await _webview.executeScript('window.anasStop();').catchError((_) {});
   }
 
@@ -256,7 +283,7 @@ class PcShakaPlayerController {
   }
 
   Widget buildView() {
-    if (!_initialized) {
+    if (!_initialized || _disposed) {
       return const ColoredBox(color: Colors.black);
     }
     return IgnorePointer(
@@ -270,13 +297,22 @@ class PcShakaPlayerController {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _pendingPlayback = null;
     for (final s in _subs) {
-      await s.cancel();
+      await s.cancel().catchError((_) {});
     }
     _subs.clear();
-    if (_initialized) {
-      await _webview.dispose().catchError((_) {});
-    }
-    await _server.stop();
+
+    await _serialize(() async {
+      if (_initialized) {
+        if (_engineReady) {
+          await _webview.executeScript('window.anasStop();').catchError((_) {});
+        }
+        await _webview.loadUrl('about:blank').catchError((_) {});
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        await _webview.dispose().catchError((_) {});
+      }
+      await _server.stop().catchError((_) {});
+    }).catchError((_) {});
   }
 }
