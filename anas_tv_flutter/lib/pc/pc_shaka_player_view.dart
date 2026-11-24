@@ -62,7 +62,7 @@ class PcShakaPlayerController {
           await WebviewController.initializeEnvironment(
             userDataPath: userDataPath,
             additionalArguments:
-                '--autoplay-policy=no-user-gesture-required --disable-features=HardwareMediaKeyHandling $originFlag',
+                '--autoplay-policy=no-user-gesture-required --disable-features=HardwareMediaKeyHandling --enable-features=PlatformHEVCDecoderSupport --ignore-gpu-blocklist $originFlag',
           );
         } catch (_) {}
       }

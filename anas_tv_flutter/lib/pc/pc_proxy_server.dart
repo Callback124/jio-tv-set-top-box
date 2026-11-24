@@ -680,16 +680,16 @@ const String _playerHtml = r'''<!DOCTYPE html>
         }
       }
 
-      async function probeEmeSupport() {
+      async function probeEmeSupport(extraDiag) {
         var cfg = [{
           initDataTypes: ['cenc'],
           videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.4d401f"' }],
           audioCapabilities: [{ contentType: 'audio/mp4; codecs="mp4a.40.2"' }]
         }];
-        async function testKeySystem(ks) {
+        async function testKeySystem(ks, customCfg) {
           if (!navigator.requestMediaKeySystemAccess) return 'no-api';
           try {
-            await navigator.requestMediaKeySystemAccess(ks, cfg);
+            await navigator.requestMediaKeySystemAccess(ks, customCfg || cfg);
             return 'ok';
           } catch (err) {
             return (err && err.name ? err.name : 'fail');
@@ -700,10 +700,21 @@ const String _playerHtml = r'''<!DOCTYPE html>
           testKeySystem('com.widevine.alpha'),
           testKeySystem('com.microsoft.playready')
         ]);
-        return 'ctx=' + (window.isSecureContext ? 'secure' : 'insecure') +
-               ', clearKey=' + results[0] +
-               ', widevine=' + results[1] +
-               ', playready=' + results[2];
+        var out = 'ctx=' + (window.isSecureContext ? 'secure' : 'insecure') +
+                  ', clearKey=' + results[0] +
+                  ', widevine=' + results[1] +
+                  ', playready=' + results[2];
+        if (extraDiag && /(hvc1|hev1)/i.test(extraDiag) && !/avc1/i.test(extraDiag)) {
+          var hevcMse = (window.MediaSource && MediaSource.isTypeSupported)
+              ? MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L93.B0"')
+              : false;
+          var hevcEme = await testKeySystem('org.w3.clearkey', [{
+            initDataTypes: ['cenc'],
+            videoCapabilities: [{ contentType: 'video/mp4; codecs="hvc1.1.6.L93.B0"' }]
+          }]);
+          out += ', hevcMse=' + hevcMse + ', hevcEme=' + hevcEme;
+        }
+        return out;
       }
 
       function emitTracks() {
@@ -953,8 +964,11 @@ const String _playerHtml = r'''<!DOCTYPE html>
           var code = e && e.code ? (' (' + e.code + ')') : '';
           var baseMsg = (e && e.message) ? e.message : String(e);
           if (e && e.code === 6001) {
-            var diag = await probeEmeSupport();
+            var diag = await probeEmeSupport(lastMpdDiag);
             var keyCount = cfg.clearKeys ? Object.keys(cfg.clearKeys).length : 0;
+            if (lastMpdDiag && /(hvc1|hev1)/i.test(lastMpdDiag) && !/avc1/i.test(lastMpdDiag)) {
+              baseMsg = 'HEVC (H.265) video is PC par supported nahi hai — Microsoft Store se "HEVC Video Extensions" install karein ya is channel ka H.264/SD version chalayein. (' + baseMsg + ')';
+            }
             baseMsg += ' [' + diag + ', keys=' + keyCount + (lastMpdDiag ? ', ' + lastMpdDiag : '') + ']';
           }
           postToDart({
