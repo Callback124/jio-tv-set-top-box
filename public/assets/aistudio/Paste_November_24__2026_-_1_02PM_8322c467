@@ -1,0 +1,497 @@
+2026-11-24T07:27:44.6467161Z Current runner version: '2.338.2'
+2026-11-24T07:27:44.6488520Z ##[group]Runner Image Provisioner
+2026-11-24T07:27:44.6489165Z Hosted Compute Agent
+2026-11-24T07:27:44.6489610Z Version: 20261111.635
+2026-11-24T07:27:44.6490074Z Commit: b8a594ea514ff44cadb5342986c68b1eac6e22ed
+2026-11-24T07:27:44.6490661Z Build Date: 2026-11-11T01:49:01Z
+2026-11-24T07:27:44.6491217Z Worker ID: {d849df99-7eee-4748-8718-4e63ed316ba6}
+2026-11-24T07:27:44.6491758Z Region: southcentralus
+2026-11-24T07:27:44.6492282Z Cloud: Azure
+2026-11-24T07:27:44.6492673Z ##[endgroup]
+2026-11-24T07:27:44.6493647Z ##[group]Operating System
+2026-11-24T07:27:44.6494181Z Microsoft Windows Server 2025
+2026-11-24T07:27:44.6494645Z 10.0.26100
+2026-11-24T07:27:44.6495061Z Datacenter
+2026-11-24T07:27:44.6495459Z ##[endgroup]
+2026-11-24T07:27:44.6495859Z ##[group]Runner Image
+2026-11-24T07:27:44.6496331Z Image: windows-2025-vs2026
+2026-11-24T07:27:44.6496840Z Version: 20261116.315.1
+2026-11-24T07:27:44.6498062Z Included Software: https://github.com/actions/runner-images/blob/win25-vs2026/20261116.315/images/windows/Windows2025-VS2026-Readme.md
+2026-11-24T07:27:44.6499337Z Image Release: https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20261116.315
+2026-11-24T07:27:44.6500087Z ##[endgroup]
+2026-11-24T07:27:44.6500971Z ##[group]GITHUB_TOKEN Permissions
+2026-11-24T07:27:44.6502449Z Contents: read
+2026-11-24T07:27:44.6502906Z Metadata: read
+2026-11-24T07:27:44.6503431Z ##[endgroup]
+2026-11-24T07:27:44.6505204Z Secret source: Actions
+2026-11-24T07:27:44.6505962Z Cache mode: write
+2026-11-24T07:27:44.6506489Z Prepare workflow directory
+2026-11-24T07:27:44.6924752Z Prepare all required actions
+2026-11-24T07:27:44.6966047Z Getting action download info
+2026-11-24T07:27:44.9697747Z Download action repository 'actions/checkout@v4' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+2026-11-24T07:27:45.0680894Z Download action repository 'subosito/flutter-action@v2' (SHA:1a449444c387b1966244ae4d4f8c696479add0b2)
+2026-11-24T07:27:45.3469624Z Download action repository 'actions/upload-artifact@v4' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+2026-11-24T07:27:45.6287930Z Getting action download info
+2026-11-24T07:27:45.7382816Z Download action repository 'actions/cache@v5' (SHA:caa296126883cff596d87d8935842f9db880ef25)
+2026-11-24T07:27:45.8788899Z Complete job name: build
+2026-11-24T07:27:45.9957253Z ##[group]Run actions/checkout@v4
+2026-11-24T07:27:45.9958145Z with:
+2026-11-24T07:27:45.9958826Z   repository: Callback124/jio-tv-set-top-box
+2026-11-24T07:27:45.9962179Z   token: ***
+2026-11-24T07:27:45.9962519Z   ssh-strict: true
+2026-11-24T07:27:45.9962872Z   ssh-user: git
+2026-11-24T07:27:45.9963217Z   persist-credentials: true
+2026-11-24T07:27:45.9963601Z   clean: true
+2026-11-24T07:27:45.9963947Z   sparse-checkout-cone-mode: true
+2026-11-24T07:27:45.9964352Z   fetch-depth: 1
+2026-11-24T07:27:45.9964686Z   fetch-tags: false
+2026-11-24T07:27:45.9965040Z   show-progress: true
+2026-11-24T07:27:45.9965399Z   lfs: false
+2026-11-24T07:27:45.9965738Z   submodules: false
+2026-11-24T07:27:45.9966093Z   set-safe-directory: true
+2026-11-24T07:27:45.9966491Z   allow-unsafe-pr-checkout: false
+2026-11-24T07:27:45.9967089Z ##[endgroup]
+2026-11-24T07:27:46.1126843Z Syncing repository: Callback124/jio-tv-set-top-box
+2026-11-24T07:27:46.1128402Z ##[group]Getting Git version info
+2026-11-24T07:27:46.1128995Z Working directory is 'D:\a\jio-tv-set-top-box\jio-tv-set-top-box'
+2026-11-24T07:27:46.1756865Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-11-24T07:27:46.4699983Z git version 2.56.1.windows.1
+2026-11-24T07:27:46.4741615Z ##[endgroup]
+2026-11-24T07:27:46.4816376Z Temporarily overriding HOME='D:\a\_temp\98984ad9-d6dd-44e3-bb08-85c6584dd69f' before making global git config changes
+2026-11-24T07:27:46.4818427Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-24T07:27:46.4819664Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\jio-tv-set-top-box\jio-tv-set-top-box
+2026-11-24T07:27:46.5352767Z Deleting the contents of 'D:\a\jio-tv-set-top-box\jio-tv-set-top-box'
+2026-11-24T07:27:46.5358038Z ##[group]Initializing the repository
+2026-11-24T07:27:46.5365087Z [command]"C:\Program Files\Git\bin\git.exe" init D:\a\jio-tv-set-top-box\jio-tv-set-top-box
+2026-11-24T07:27:46.6183014Z Initialized empty Git repository in D:/a/jio-tv-set-top-box/jio-tv-set-top-box/.git/
+2026-11-24T07:27:46.6225712Z [command]"C:\Program Files\Git\bin\git.exe" remote add origin https://github.com/Callback124/jio-tv-set-top-box
+2026-11-24T07:27:46.6782568Z ##[endgroup]
+2026-11-24T07:27:46.6783501Z ##[group]Disabling automatic garbage collection
+2026-11-24T07:27:46.6790404Z [command]"C:\Program Files\Git\bin\git.exe" config --local gc.auto 0
+2026-11-24T07:27:46.7116758Z ##[endgroup]
+2026-11-24T07:27:46.7118312Z ##[group]Setting up auth
+2026-11-24T07:27:46.7127816Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-11-24T07:27:46.7495601Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-11-24T07:27:48.1062915Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-24T07:27:48.1362307Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-11-24T07:27:48.6112885Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-24T07:27:48.6411506Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-11-24T07:27:49.0954253Z [command]"C:\Program Files\Git\bin\git.exe" config --local http.https://github.com/.extraheader "AUTHORIZATION: basic ***"
+2026-11-24T07:27:49.1264971Z ##[endgroup]
+2026-11-24T07:27:49.1265601Z ##[group]Fetching the repository
+2026-11-24T07:27:49.1277951Z [command]"C:\Program Files\Git\bin\git.exe" -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +ce5cba23ae6d8b5a3698085c6bbf14e53fb94733:refs/remotes/origin/main
+2026-11-24T07:27:52.3576193Z From https://github.com/Callback124/jio-tv-set-top-box
+2026-11-24T07:27:52.3577183Z  * [new ref]         ce5cba23ae6d8b5a3698085c6bbf14e53fb94733 -> origin/main
+2026-11-24T07:27:52.3612189Z ##[endgroup]
+2026-11-24T07:27:52.3612513Z ##[group]Determining the checkout info
+2026-11-24T07:27:52.3614889Z ##[endgroup]
+2026-11-24T07:27:52.3626111Z [command]"C:\Program Files\Git\bin\git.exe" sparse-checkout disable
+2026-11-24T07:27:52.4048185Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all extensions.worktreeConfig
+2026-11-24T07:27:52.4353282Z ##[group]Checking out the ref
+2026-11-24T07:27:52.4354288Z [command]"C:\Program Files\Git\bin\git.exe" checkout --progress --force -B main refs/remotes/origin/main
+2026-11-24T07:27:52.6845083Z Switched to a new branch 'main'
+2026-11-24T07:27:52.6863719Z branch 'main' set up to track 'origin/main'.
+2026-11-24T07:27:52.6940570Z ##[endgroup]
+2026-11-24T07:27:52.7328910Z [command]"C:\Program Files\Git\bin\git.exe" log -1 --format=%H
+2026-11-24T07:27:52.7613856Z ce5cba23ae6d8b5a3698085c6bbf14e53fb94733
+2026-11-24T07:27:52.8088877Z ##[group]Run subosito/flutter-action@v2
+2026-11-24T07:27:52.8089183Z with:
+2026-11-24T07:27:52.8089333Z   channel: stable
+2026-11-24T07:27:52.8089497Z   cache: true
+2026-11-24T07:27:52.8089649Z   architecture: X64
+2026-11-24T07:27:52.8089814Z   pub-cache-path: default
+2026-11-24T07:27:52.8089983Z   dry-run: false
+2026-11-24T07:27:52.8090237Z   git-source: https://github.com/flutter/flutter.git
+2026-11-24T07:27:52.8090519Z ##[endgroup]
+2026-11-24T07:27:52.8144629Z ##[start-action display=Make yq tool available on Windows runners;id=__subosito_flutter-action.__run]
+2026-11-24T07:27:52.8163609Z ##[end-action id=__subosito_flutter-action.__run;outcome=skipped;conclusion=skipped;duration_ms=0]
+2026-11-24T07:27:52.8165338Z ##[start-action display=Make setup script executable;id=__subosito_flutter-action.__run_2]
+2026-11-24T07:27:52.8293518Z ##[group]Run chmod +x "$GITHUB_ACTION_PATH/setup.sh"
+2026-11-24T07:27:52.8293849Z [36;1mchmod +x "$GITHUB_ACTION_PATH/setup.sh"[0m
+2026-11-24T07:27:52.8308534Z shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+2026-11-24T07:27:52.8308866Z ##[endgroup]
+2026-11-24T07:27:53.0055192Z ##[end-action id=__subosito_flutter-action.__run_2;outcome=success;conclusion=success;duration_ms=188]
+2026-11-24T07:27:53.0057537Z ##[start-action display=Set action inputs;id=__subosito_flutter-action.flutter-action]
+2026-11-24T07:27:53.1039517Z ##[group]Run $GITHUB_ACTION_PATH/setup.sh -p \
+2026-11-24T07:27:53.1039860Z [36;1m$GITHUB_ACTION_PATH/setup.sh -p \[0m
+2026-11-24T07:27:53.1040076Z [36;1m  -n '' \[0m
+2026-11-24T07:27:53.1040232Z [36;1m  -f '' \[0m
+2026-11-24T07:27:53.1040378Z [36;1m  -a 'X64' \[0m
+2026-11-24T07:27:53.1040531Z [36;1m  -k '' \[0m
+2026-11-24T07:27:53.1040677Z [36;1m  -c '' \[0m
+2026-11-24T07:27:53.1040816Z [36;1m  -l '' \[0m
+2026-11-24T07:27:53.1040963Z [36;1m  -d 'default' \[0m
+2026-11-24T07:27:53.1041210Z [36;1m  -g 'https://github.com/flutter/flutter.git' \[0m
+2026-11-24T07:27:53.1041477Z [36;1m  stable[0m
+2026-11-24T07:27:53.1052676Z shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+2026-11-24T07:27:53.1052988Z ##[endgroup]
+2026-11-24T07:27:55.9750317Z ##[end-action id=__subosito_flutter-action.flutter-action;outcome=success;conclusion=success;duration_ms=2969]
+2026-11-24T07:27:55.9754235Z ##[start-action display=Cache Flutter;id=__subosito_flutter-action.cache-flutter]
+2026-11-24T07:27:55.9876319Z ##[group]Run actions/cache@v5
+2026-11-24T07:27:55.9876521Z with:
+2026-11-24T07:27:55.9876723Z   path: C:\hostedtoolcache\windows\flutter\stable-3.50.1-x64
+2026-11-24T07:27:55.9877084Z   key: flutter-windows-stable-3.50.1-x64-ae9b586f34a8443573f82ef57c3bf914a908cbf7
+2026-11-24T07:27:55.9877406Z   enableCrossOsArchive: false
+2026-11-24T07:27:55.9877582Z   fail-on-cache-miss: false
+2026-11-24T07:27:55.9877746Z   lookup-only: false
+2026-11-24T07:27:55.9877910Z   save-always: false
+2026-11-24T07:27:55.9878063Z ##[endgroup]
+2026-11-24T07:27:56.3830314Z Cache hit for: flutter-windows-stable-3.50.1-x64-ae9b586f34a8443573f82ef57c3bf914a908cbf7
+2026-11-24T07:27:57.5618961Z Received 113246208 of 1865369584 (6.1%), 106.6 MBs/sec
+2026-11-24T07:27:58.5655093Z Received 134217728 of 1865369584 (7.2%), 63.5 MBs/sec
+2026-11-24T07:27:59.5710498Z Received 276824064 of 1865369584 (14.8%), 87.4 MBs/sec
+2026-11-24T07:28:00.5726044Z Received 402653184 of 1865369584 (21.6%), 95.4 MBs/sec
+2026-11-24T07:28:01.6233502Z Received 536870912 of 1865369584 (28.8%), 100.9 MBs/sec
+2026-11-24T07:28:02.6665376Z Received 671088640 of 1865369584 (36.0%), 104.7 MBs/sec
+2026-11-24T07:28:03.6815310Z Received 805306368 of 1865369584 (43.2%), 107.7 MBs/sec
+2026-11-24T07:28:04.7250536Z Received 939524096 of 1865369584 (50.4%), 109.6 MBs/sec
+2026-11-24T07:28:05.7408259Z Received 1073741824 of 1865369584 (57.6%), 111.4 MBs/sec
+2026-11-24T07:28:06.8339033Z Received 1207959552 of 1865369584 (64.8%), 112.1 MBs/sec
+2026-11-24T07:28:07.9967983Z Received 1342177280 of 1865369584 (72.0%), 111.8 MBs/sec
+2026-11-24T07:28:09.1200994Z Received 1476395008 of 1865369584 (79.1%), 112.0 MBs/sec
+2026-11-24T07:28:10.2052586Z Received 1610612736 of 1865369584 (86.3%), 112.5 MBs/sec
+2026-11-24T07:28:11.3076471Z Received 1744830464 of 1865369584 (93.5%), 112.8 MBs/sec
+2026-11-24T07:28:12.3664662Z Received 1865369584 of 1865369584 (100.0%), 112.5 MBs/sec
+2026-11-24T07:28:12.3669191Z Cache Size: ~1779 MB (1865369584 B)
+2026-11-24T07:28:12.3759697Z [command]"C:\Program Files\Git\usr\bin\tar.exe" -xf D:/a/_temp/c41ad943-edbc-4c38-957d-345f877094a1/cache.tzst -P -C D:/a/jio-tv-set-top-box/jio-tv-set-top-box --force-local --use-compress-program "zstd -d"
+2026-11-24T07:28:54.1623218Z Cache restored successfully
+2026-11-24T07:28:54.2594647Z Cache restored from key: flutter-windows-stable-3.50.1-x64-ae9b586f34a8443573f82ef57c3bf914a908cbf7
+2026-11-24T07:28:54.2739190Z ##[end-action id=__subosito_flutter-action.cache-flutter;outcome=success;conclusion=success;duration_ms=58298]
+2026-11-24T07:28:54.2741688Z ##[start-action display=Cache pub dependencies;id=__subosito_flutter-action.cache-pub]
+2026-11-24T07:28:54.3952341Z ##[group]Run actions/cache@v5
+2026-11-24T07:28:54.3952533Z with:
+2026-11-24T07:28:54.3952728Z   path: C:\Users\runneradmin\AppData\Local\Pub\Cache
+2026-11-24T07:28:54.3953100Z   key: flutter-pub-windows-stable-3.50.1-x64-ae9b586f34a8443573f82ef57c3bf914a908cbf7-
+2026-11-24T07:28:54.3953446Z   enableCrossOsArchive: false
+2026-11-24T07:28:54.3953636Z   fail-on-cache-miss: false
+2026-11-24T07:28:54.3953839Z   lookup-only: false
+2026-11-24T07:28:54.3953997Z   save-always: false
+2026-11-24T07:28:54.3954149Z ##[endgroup]
+2026-11-24T07:28:54.7511073Z Cache hit for: flutter-pub-windows-stable-3.50.1-x64-ae9b586f34a8443573f82ef57c3bf914a908cbf7-
+2026-11-24T07:28:55.4590373Z Received 24173818 of 24173818 (100.0%), 43.2 MBs/sec
+2026-11-24T07:28:55.4591961Z Cache Size: ~23 MB (24173818 B)
+2026-11-24T07:28:55.4612181Z [command]"C:\Program Files\Git\usr\bin\tar.exe" -xf D:/a/_temp/5022305a-6380-4f6a-84dd-520d11bda36a/cache.tzst -P -C D:/a/jio-tv-set-top-box/jio-tv-set-top-box --force-local --use-compress-program "zstd -d"
+2026-11-24T07:29:11.0892062Z Cache restored successfully
+2026-11-24T07:29:11.0996367Z Cache restored from key: flutter-pub-windows-stable-3.50.1-x64-ae9b586f34a8443573f82ef57c3bf914a908cbf7-
+2026-11-24T07:29:11.1120698Z ##[end-action id=__subosito_flutter-action.cache-pub;outcome=success;conclusion=success;duration_ms=16837]
+2026-11-24T07:29:11.1122786Z ##[start-action display=Run setup script;id=__subosito_flutter-action.__run_3]
+2026-11-24T07:29:11.1242456Z ##[group]Run $GITHUB_ACTION_PATH/setup.sh \
+2026-11-24T07:29:11.1242740Z [36;1m$GITHUB_ACTION_PATH/setup.sh \[0m
+2026-11-24T07:29:11.1242954Z [36;1m  -n '3.50.1' \[0m
+2026-11-24T07:29:11.1243137Z [36;1m  -a 'x64' \[0m
+2026-11-24T07:29:11.1243380Z [36;1m  -c 'C:\hostedtoolcache\windows\flutter\stable-3.50.1-x64' \[0m
+2026-11-24T07:29:11.1243712Z [36;1m  -d 'C:\Users\runneradmin\AppData\Local\Pub\Cache' \[0m
+2026-11-24T07:29:11.1243977Z [36;1m  stable[0m
+2026-11-24T07:29:11.1254677Z shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+2026-11-24T07:29:11.1254994Z ##[endgroup]
+2026-11-24T07:29:13.1613456Z ##[end-action id=__subosito_flutter-action.__run_3;outcome=success;conclusion=success;duration_ms=2049]
+2026-11-24T07:29:13.1752789Z ##[group]Run if (-not (Get-Command nuget -ErrorAction SilentlyContinue)) {
+2026-11-24T07:29:13.1753301Z [36;1mif (-not (Get-Command nuget -ErrorAction SilentlyContinue)) {[0m
+2026-11-24T07:29:13.1753636Z [36;1m  $nugetDir = "$env:RUNNER_TEMP\nuget"[0m
+2026-11-24T07:29:13.1753960Z [36;1m  New-Item -ItemType Directory -Force -Path $nugetDir | Out-Null[0m
+2026-11-24T07:29:13.1754250Z [36;1m  try {[0m
+2026-11-24T07:29:13.1755039Z [36;1m    Invoke-WebRequest -Uri "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe" -OutFile "$nugetDir\nuget.exe" -UseBasicParsing[0m
+2026-11-24T07:29:13.1755638Z [36;1m    "$nugetDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append[0m
+2026-11-24T07:29:13.1755941Z [36;1m  } catch {[0m
+2026-11-24T07:29:13.1756171Z [36;1m    choco install nuget.commandline -y --no-progress[0m
+2026-11-24T07:29:13.1756415Z [36;1m  }[0m
+2026-11-24T07:29:13.1756570Z [36;1m}[0m
+2026-11-24T07:29:13.5865144Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+2026-11-24T07:29:13.5865445Z env:
+2026-11-24T07:29:13.5865718Z   FLUTTER_ROOT: C:\hostedtoolcache\windows\flutter\stable-3.50.1-x64/flutter
+2026-11-24T07:29:13.5866245Z   PUB_CACHE: C:\Users\runneradmin\AppData\Local\Pub\Cache
+2026-11-24T07:29:13.5866478Z ##[endgroup]
+2026-11-24T07:29:13.9833194Z ##[group]Run if (-not (Test-Path "windows")) {
+2026-11-24T07:29:13.9833586Z [36;1mif (-not (Test-Path "windows")) {[0m
+2026-11-24T07:29:13.9833898Z [36;1m  flutter create --platforms=windows --org com.anas.tv .[0m
+2026-11-24T07:29:13.9834162Z [36;1m}[0m
+2026-11-24T07:29:13.9834346Z [36;1mif (Test-Path "windows/CMakeLists.txt") {[0m
+2026-11-24T07:29:13.9834626Z [36;1m  $cmake = Get-Content "windows/CMakeLists.txt" -Raw[0m
+2026-11-24T07:29:13.9835011Z [36;1m  $cmake = $cmake -replace 'set\(\s*BINARY_NAME\s+"[^"]+"\s*\)', 'set(BINARY_NAME "AnasTV")'[0m
+2026-11-24T07:29:13.9835527Z [36;1m  Set-Content "windows/CMakeLists.txt" $cmake -NoNewline[0m
+2026-11-24T07:29:13.9835787Z [36;1m}[0m
+2026-11-24T07:29:13.9835970Z [36;1mif (Test-Path "windows/runner/main.cpp") {[0m
+2026-11-24T07:29:13.9836266Z [36;1m  $cpp = Get-Content "windows/runner/main.cpp" -Raw[0m
+2026-11-24T07:29:13.9836787Z [36;1m  $cpp = $cpp -replace 'L"anas_tv"', 'L"AnasTV"'[0m
+2026-11-24T07:29:13.9837114Z [36;1m  Set-Content "windows/runner/main.cpp" $cpp -NoNewline[0m
+2026-11-24T07:29:13.9837364Z [36;1m}[0m
+2026-11-24T07:29:13.9837550Z [36;1mif (Test-Path "windows/runner/Runner.rc") {[0m
+2026-11-24T07:29:13.9837818Z [36;1m  $rc = Get-Content "windows/runner/Runner.rc" -Raw[0m
+2026-11-24T07:29:13.9838095Z [36;1m  $rc = $rc -replace '"anas_tv(\.exe)?"', '"AnasTV$1"'[0m
+2026-11-24T07:29:13.9838385Z [36;1m  Set-Content "windows/runner/Runner.rc" $rc -NoNewline[0m
+2026-11-24T07:29:13.9838615Z [36;1m}[0m
+2026-11-24T07:29:13.9895736Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+2026-11-24T07:29:13.9896150Z env:
+2026-11-24T07:29:13.9896434Z   FLUTTER_ROOT: C:\hostedtoolcache\windows\flutter\stable-3.50.1-x64/flutter
+2026-11-24T07:29:13.9896931Z   PUB_CACHE: C:\Users\runneradmin\AppData\Local\Pub\Cache
+2026-11-24T07:29:13.9897188Z ##[endgroup]
+2026-11-24T07:29:15.6720854Z Recreating project ....
+2026-11-24T07:29:15.7140534Z   .gitignore (created)
+2026-11-24T07:29:15.7213470Z   .idea\libraries\Dart_SDK.xml (created)
+2026-11-24T07:29:15.7242257Z   .idea\libraries\KotlinJavaRuntime.xml (created)
+2026-11-24T07:29:15.7251087Z   .idea\modules.xml (created)
+2026-11-24T07:29:15.7262350Z   .idea\runConfigurations\main_dart.xml (created)
+2026-11-24T07:29:15.7270127Z   .idea\workspace.xml (created)
+2026-11-24T07:29:15.7282572Z   analysis_options.yaml (created)
+2026-11-24T07:29:15.7310107Z   anas_tv.iml (created)
+2026-11-24T07:29:15.7319405Z   README.md (created)
+2026-11-24T07:29:15.7328191Z   windows\.gitignore (created)
+2026-11-24T07:29:15.7348525Z   windows\CMakeLists.txt (created)
+2026-11-24T07:29:15.7361037Z   windows\flutter\CMakeLists.txt (created)
+2026-11-24T07:29:15.7372783Z   windows\runner\CMakeLists.txt (created)
+2026-11-24T07:29:15.7383511Z   windows\runner\flutter_window.cpp (created)
+2026-11-24T07:29:15.7393550Z   windows\runner\flutter_window.h (created)
+2026-11-24T07:29:15.7403296Z   windows\runner\main.cpp (created)
+2026-11-24T07:29:15.7411270Z   windows\runner\resource.h (created)
+2026-11-24T07:29:15.7422266Z   windows\runner\resources\app_icon.ico (created)
+2026-11-24T07:29:15.7438851Z   windows\runner\runner.exe.manifest (created)
+2026-11-24T07:29:15.7450808Z   windows\runner\Runner.rc (created)
+2026-11-24T07:29:15.7461770Z   windows\runner\utils.cpp (created)
+2026-11-24T07:29:15.7471458Z   windows\runner\utils.h (created)
+2026-11-24T07:29:15.7481362Z   windows\runner\win32_window.cpp (created)
+2026-11-24T07:29:15.7491785Z   windows\runner\win32_window.h (created)
+2026-11-24T07:29:15.7500942Z   test\widget_test.dart (created)
+2026-11-24T07:29:19.3873377Z Got dependencies.
+2026-11-24T07:29:19.5983246Z Wrote 25 files.
+2026-11-24T07:29:19.5983452Z 
+2026-11-24T07:29:19.5983536Z All done!
+2026-11-24T07:29:19.5988736Z You can find general documentation for Flutter at: https://docs.flutter.dev/
+2026-11-24T07:29:19.5990514Z Detailed API documentation is available at: https://api.flutter.dev/
+2026-11-24T07:29:19.5992554Z If you prefer video documentation, consider: https://www.youtube.com/c/flutterdev
+2026-11-24T07:29:19.5992885Z 
+2026-11-24T07:29:19.5992983Z In order to run your application, type:
+2026-11-24T07:29:19.5993135Z 
+2026-11-24T07:29:19.5993207Z   $ flutter run
+2026-11-24T07:29:19.5993303Z 
+2026-11-24T07:29:19.5993394Z Your application code is in .\lib\main.dart.
+2026-11-24T07:29:19.5993557Z 
+2026-11-24T07:29:19.6901103Z ##[group]Run New-Item -ItemType Directory -Force -Path "assets/images" | Out-Null
+2026-11-24T07:29:19.6901646Z [36;1mNew-Item -ItemType Directory -Force -Path "assets/images" | Out-Null[0m
+2026-11-24T07:29:19.6902040Z [36;1mif (Test-Path "../public/assets/aistudio/jio_b70b9fac.svg") {[0m
+2026-11-24T07:29:19.6902469Z [36;1m  Copy-Item "../public/assets/aistudio/jio_b70b9fac.svg" "assets/images/jio_logo.svg" -Force[0m
+2026-11-24T07:29:19.6902847Z [36;1m}[0m
+2026-11-24T07:29:19.6903191Z [36;1mif (Test-Path "../public/assets/aistudio/JPEG_Download_Jio-Logo-Colour-Navi-Midnight_c9b3d304.jpg") {[0m
+2026-11-24T07:29:19.6903820Z [36;1m  Copy-Item "../public/assets/aistudio/JPEG_Download_Jio-Logo-Colour-Navi-Midnight_c9b3d304.jpg" "assets/images/jio_loader.jpg" -Force[0m
+2026-11-24T07:29:19.6904259Z [36;1m}[0m
+2026-11-24T07:29:19.6960153Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+2026-11-24T07:29:19.6960427Z env:
+2026-11-24T07:29:19.6960714Z   FLUTTER_ROOT: C:\hostedtoolcache\windows\flutter\stable-3.50.1-x64/flutter
+2026-11-24T07:29:19.6961053Z   PUB_CACHE: C:\Users\runneradmin\AppData\Local\Pub\Cache
+2026-11-24T07:29:19.6961287Z ##[endgroup]
+2026-11-24T07:29:20.0161546Z ##[group]Run flutter pub get
+2026-11-24T07:29:20.0161844Z [36;1mflutter pub get[0m
+2026-11-24T07:29:20.0218123Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+2026-11-24T07:29:20.0218400Z env:
+2026-11-24T07:29:20.0218660Z   FLUTTER_ROOT: C:\hostedtoolcache\windows\flutter\stable-3.50.1-x64/flutter
+2026-11-24T07:29:20.0219333Z   PUB_CACHE: C:\Users\runneradmin\AppData\Local\Pub\Cache
+2026-11-24T07:29:20.0219582Z ##[endgroup]
+2026-11-24T07:29:21.0272428Z Resolving dependencies...
+2026-11-24T07:29:21.1196257Z Downloading packages...
+2026-11-24T07:29:21.1290260Z   cached_network_image 3.4.1 (4.0.7 available)
+2026-11-24T07:29:21.1290716Z   cached_network_image_platform_interface 4.1.1 (5.0.4 available)
+2026-11-24T07:29:21.1291027Z   cached_network_image_web 1.3.1 (2.0.5 available)
+2026-11-24T07:29:21.1291262Z   flutter_lints 4.0.0 (6.0.0 available)
+2026-11-24T07:29:21.1291466Z   lints 4.0.0 (6.1.0 available)
+2026-11-24T07:29:21.1291777Z   material_color_utilities 0.13.0 (0.13.1 available)
+2026-11-24T07:29:21.1292009Z   test_api 0.7.14 (0.7.15 available)
+2026-11-24T07:29:21.1292271Z   vector_math 2.4.3 (2.4.4 available)
+2026-11-24T07:29:21.1292580Z   xml 7.0.1 (7.1.0 available)
+2026-11-24T07:29:21.1292873Z Got dependencies!
+2026-11-24T07:29:21.1293489Z 9 packages have newer versions incompatible with dependency constraints.
+2026-11-24T07:29:21.1294085Z Try `flutter pub outdated` for more information.
+2026-11-24T07:29:21.3971284Z ##[group]Run flutter build windows --release -t lib/main_pc.dart
+2026-11-24T07:29:21.3971730Z [36;1mflutter build windows --release -t lib/main_pc.dart[0m
+2026-11-24T07:29:21.4028964Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+2026-11-24T07:29:21.4029250Z env:
+2026-11-24T07:29:21.4029498Z   FLUTTER_ROOT: C:\hostedtoolcache\windows\flutter\stable-3.50.1-x64/flutter
+2026-11-24T07:29:21.4029853Z   PUB_CACHE: C:\Users\runneradmin\AppData\Local\Pub\Cache
+2026-11-24T07:29:21.4030092Z ##[endgroup]
+2026-11-24T07:29:43.1869343Z Building Windows application...                                 
+2026-11-24T07:29:43.1879694Z CMake Warning (dev) at flutter/ephemeral/.plugin_symlinks/media_kit_libs_windows_video/windows/CMakeLists.txt:90 (add_custom_command):
+2026-11-24T07:29:43.1881325Z   Exactly one of PRE_BUILD, PRE_LINK, or POST_BUILD must be given.  Assuming
+2026-11-24T07:29:43.1882177Z   POST_BUILD to preserve backward compatibility.
+2026-11-24T07:29:43.1882511Z 
+2026-11-24T07:29:43.1883470Z   Policy CMP0175 is not set: add_custom_command() rejects invalid arguments.
+2026-11-24T07:29:43.1884036Z   Run "cmake --help-policy CMP0175" for policy details.  Use the cmake_policy
+2026-11-24T07:29:43.1884631Z   command to set the policy and suppress this warning.
+2026-11-24T07:29:43.1885631Z This warning is for project developers.  Use -Wno-dev to suppress it.
+2026-11-24T07:29:43.1885983Z 
+2026-11-24T07:29:43.4293560Z CMake Warning (dev) at flutter/ephemeral/.plugin_symlinks/media_kit_libs_windows_video/windows/CMakeLists.txt:126 (add_custom_command):
+2026-11-24T07:29:43.4294536Z   Exactly one of PRE_BUILD, PRE_LINK, or POST_BUILD must be given.  Assuming
+2026-11-24T07:29:43.4295056Z   POST_BUILD to preserve backward compatibility.
+2026-11-24T07:29:43.4295366Z 
+2026-11-24T07:29:43.4295600Z   Policy CMP0175 is not set: add_custom_command() rejects invalid arguments.
+2026-11-24T07:29:43.4296236Z   Run "cmake --help-policy CMP0175" for policy details.  Use the cmake_policy
+2026-11-24T07:29:43.4296762Z   command to set the policy and suppress this warning.
+2026-11-24T07:29:43.4297289Z This warning is for project developers.  Use -Wno-dev to suppress it.
+2026-11-24T07:29:43.4298869Z 
+2026-11-24T07:32:08.0440202Z Building Windows application...                                   165.0s
+2026-11-24T07:32:08.0461446Z √ Built build\windows\x64\runner\Release\AnasTV.exe
+2026-11-24T07:32:08.1511789Z ##[group]Run $releaseDir = if (Test-Path "build/windows/x64/runner/Release") {
+2026-11-24T07:32:08.1512404Z [36;1m$releaseDir = if (Test-Path "build/windows/x64/runner/Release") {[0m
+2026-11-24T07:32:08.1512765Z [36;1m  (Resolve-Path "build/windows/x64/runner/Release").Path[0m
+2026-11-24T07:32:08.1513042Z [36;1m} else {[0m
+2026-11-24T07:32:08.1513299Z [36;1m  (Resolve-Path "build/windows/runner/Release").Path[0m
+2026-11-24T07:32:08.1513584Z [36;1m}[0m
+2026-11-24T07:32:08.1513728Z [36;1m[0m
+2026-11-24T07:32:08.1513924Z [36;1mif (-not (Test-Path "$releaseDir\AnasTV.exe")) {[0m
+2026-11-24T07:32:08.1514337Z [36;1m  $fallbackExe = Get-ChildItem -Path $releaseDir -Filter "*.exe" | Select-Object -First 1[0m
+2026-11-24T07:32:08.1514696Z [36;1m  if ($fallbackExe) {[0m
+2026-11-24T07:32:08.1514980Z [36;1m    Rename-Item -Path $fallbackExe.FullName -NewName "AnasTV.exe"[0m
+2026-11-24T07:32:08.1515258Z [36;1m  } else {[0m
+2026-11-24T07:32:08.1515493Z [36;1m    throw "AnasTV.exe not found in $releaseDir"[0m
+2026-11-24T07:32:08.1515729Z [36;1m  }[0m
+2026-11-24T07:32:08.1515882Z [36;1m}[0m
+2026-11-24T07:32:08.1516021Z [36;1m[0m
+2026-11-24T07:32:08.1516282Z [36;1m# Bundle Visual C++ x64 runtime DLLs so fresh Windows PCs never crash on startup[0m
+2026-11-24T07:32:08.1516710Z [36;1mforeach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {[0m
+2026-11-24T07:32:08.1517061Z [36;1m  $sysDll = Join-Path $env:WINDIR "System32\$dll"[0m
+2026-11-24T07:32:08.1517357Z [36;1m  $dstDll = Join-Path $releaseDir $dll[0m
+2026-11-24T07:32:08.1517643Z [36;1m  if ((Test-Path $sysDll) -and (-not (Test-Path $dstDll))) {[0m
+2026-11-24T07:32:08.1517932Z [36;1m    Copy-Item $sysDll $dstDll -Force[0m
+2026-11-24T07:32:08.1518156Z [36;1m  }[0m
+2026-11-24T07:32:08.1518300Z [36;1m}[0m
+2026-11-24T07:32:08.1518446Z [36;1m[0m
+2026-11-24T07:32:08.1518610Z [36;1m# Ensure 7z CLI is available[0m
+2026-11-24T07:32:08.1518992Z [36;1m$sevenZip = Get-Command 7z -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source[0m
+2026-11-24T07:32:08.1519457Z [36;1mif (-not $sevenZip -and (Test-Path "C:\Program Files\7-Zip\7z.exe")) {[0m
+2026-11-24T07:32:08.1519806Z [36;1m  $sevenZip = "C:\Program Files\7-Zip\7z.exe"[0m
+2026-11-24T07:32:08.1520043Z [36;1m}[0m
+2026-11-24T07:32:08.1520199Z [36;1mif (-not $sevenZip) {[0m
+2026-11-24T07:32:08.1520600Z [36;1m  choco install 7zip -y --no-progress[0m
+2026-11-24T07:32:08.1520860Z [36;1m  $sevenZip = "C:\Program Files\7-Zip\7z.exe"[0m
+2026-11-24T07:32:08.1521391Z [36;1m}[0m
+2026-11-24T07:32:08.1521596Z [36;1mif (-not (Test-Path $sevenZip)) {[0m
+2026-11-24T07:32:08.1521820Z [36;1m  throw "7z.exe not found"[0m
+2026-11-24T07:32:08.1522020Z [36;1m}[0m
+2026-11-24T07:32:08.1522159Z [36;1m[0m
+2026-11-24T07:32:08.1522347Z [36;1m$sfxWork = Join-Path $env:RUNNER_TEMP "anas_sfx"[0m
+2026-11-24T07:32:08.1522676Z [36;1mNew-Item -ItemType Directory -Force -Path $sfxWork | Out-Null[0m
+2026-11-24T07:32:08.1522976Z [36;1m[0m
+2026-11-24T07:32:08.1523153Z [36;1m$extra7z = Join-Path $sfxWork "7z_extra.7z"[0m
+2026-11-24T07:32:08.1523398Z [36;1m$sfxUrls = @([0m
+2026-11-24T07:32:08.1523613Z [36;1m  "https://www.7-zip.org/a/7z2409-extra.7z",[0m
+2026-11-24T07:32:08.1523879Z [36;1m  "https://www.7-zip.org/a/7z2408-extra.7z",[0m
+2026-11-24T07:32:08.1524120Z [36;1m  "https://www.7-zip.org/a/7z2301-extra.7z"[0m
+2026-11-24T07:32:08.1524329Z [36;1m)[0m
+2026-11-24T07:32:08.1524486Z [36;1m$downloaded = $false[0m
+2026-11-24T07:32:08.1524700Z [36;1mforeach ($u in $sfxUrls) {[0m
+2026-11-24T07:32:08.1524897Z [36;1m  try {[0m
+2026-11-24T07:32:08.1525159Z [36;1m    Invoke-WebRequest -Uri $u -OutFile $extra7z -UseBasicParsing[0m
+2026-11-24T07:32:08.1525526Z [36;1m    if ((Test-Path $extra7z) -and ((Get-Item $extra7z).Length -gt 100000)) {[0m
+2026-11-24T07:32:08.1525827Z [36;1m      $downloaded = $true[0m
+2026-11-24T07:32:08.1526015Z [36;1m      break[0m
+2026-11-24T07:32:08.1527319Z [36;1m    }[0m
+2026-11-24T07:32:08.1527509Z [36;1m  } catch {}[0m
+2026-11-24T07:32:08.1527674Z [36;1m}[0m
+2026-11-24T07:32:08.1527836Z [36;1mif (-not $downloaded) {[0m
+2026-11-24T07:32:08.1528087Z [36;1m  throw "Failed to download 7-Zip Extra SFX module"[0m
+2026-11-24T07:32:08.1528328Z [36;1m}[0m
+2026-11-24T07:32:08.1528473Z [36;1m[0m
+2026-11-24T07:32:08.1528659Z [36;1m$sfxExtracted = Join-Path $sfxWork "extra"[0m
+2026-11-24T07:32:08.1528957Z [36;1m& $sevenZip x $extra7z "-o$sfxExtracted" -y | Out-Null[0m
+2026-11-24T07:32:08.1529198Z [36;1m[0m
+2026-11-24T07:32:08.1529345Z [36;1m$sfxStubItem = $null[0m
+2026-11-24T07:32:08.1529538Z [36;1m$needsConfig = $true[0m
+2026-11-24T07:32:08.1530096Z [36;1mforeach ($candidateName in @("7zSD.sfx", "7zS.sfx", "7zS2.sfx")) {[0m
+2026-11-24T07:32:08.1530567Z [36;1m  $matches = Get-ChildItem -Path $sfxExtracted -Recurse -Filter $candidateName -File | Sort-Object {[0m
+2026-11-24T07:32:08.1531070Z [36;1m    if ($_.FullName -match 'x64|amd64') { 0 } elseif ($_.FullName -match 'arm') { 2 } else { 1 }[0m
+2026-11-24T07:32:08.1531393Z [36;1m  }[0m
+2026-11-24T07:32:08.1531596Z [36;1m  $picked = $matches | Select-Object -First 1[0m
+2026-11-24T07:32:08.1531832Z [36;1m  if ($picked) {[0m
+2026-11-24T07:32:08.1532026Z [36;1m    $sfxStubItem = $picked[0m
+2026-11-24T07:32:08.1532273Z [36;1m    $needsConfig = ($candidateName -ne "7zS2.sfx")[0m
+2026-11-24T07:32:08.1532512Z [36;1m    break[0m
+2026-11-24T07:32:08.1532679Z [36;1m  }[0m
+2026-11-24T07:32:08.1532823Z [36;1m}[0m
+2026-11-24T07:32:08.1532975Z [36;1mif (-not $sfxStubItem) {[0m
+2026-11-24T07:32:08.1533366Z [36;1m  $allFiles = (Get-ChildItem -Path $sfxExtracted -Recurse -File | ForEach-Object { $_.FullName }) -join ", "[0m
+2026-11-24T07:32:08.1533857Z [36;1m  throw "No supported installer SFX found in extra archive. Files: $allFiles"[0m
+2026-11-24T07:32:08.1534165Z [36;1m}[0m
+2026-11-24T07:32:08.1534325Z [36;1m$sfxStub = $sfxStubItem.FullName[0m
+2026-11-24T07:32:08.1534620Z [36;1mWrite-Host "Using SFX module: $sfxStub (config=$needsConfig)"[0m
+2026-11-24T07:32:08.1534883Z [36;1m[0m
+2026-11-24T07:32:08.1535142Z [36;1m# Compress Release directory using LZMA (compatible with all 7-Zip SFX modules)[0m
+2026-11-24T07:32:08.1535501Z [36;1m$payload7z = Join-Path $sfxWork "payload.7z"[0m
+2026-11-24T07:32:08.1535798Z [36;1mif (Test-Path $payload7z) { Remove-Item $payload7z -Force }[0m
+2026-11-24T07:32:08.1536204Z [36;1mPush-Location $releaseDir[0m
+2026-11-24T07:32:08.1536394Z [36;1mtry {[0m
+2026-11-24T07:32:08.1536594Z [36;1m  & $sevenZip a -t7z -m0=LZMA -mx=5 $payload7z * -r[0m
+2026-11-24T07:32:08.1536840Z [36;1m} finally {[0m
+2026-11-24T07:32:08.1537008Z [36;1m  Pop-Location[0m
+2026-11-24T07:32:08.1537189Z [36;1m}[0m
+2026-11-24T07:32:08.1537378Z [36;1mif (-not (Test-Path $payload7z)) {[0m
+2026-11-24T07:32:08.1537612Z [36;1m  throw "payload.7z creation failed"[0m
+2026-11-24T07:32:08.1537822Z [36;1m}[0m
+2026-11-24T07:32:08.1537961Z [36;1m[0m
+2026-11-24T07:32:08.1538245Z [36;1m# Write UTF-8 (no BOM) config for silent temp extraction + auto cleanup when supported[0m
+2026-11-24T07:32:08.1538570Z [36;1m$parts = @($sfxStub)[0m
+2026-11-24T07:32:08.1538758Z [36;1mif ($needsConfig) {[0m
+2026-11-24T07:32:08.1538984Z [36;1m  $cfgPath = Join-Path $sfxWork "config.txt"[0m
+2026-11-24T07:32:08.1539407Z [36;1m  $cfgText = ";!@Install@!UTF-8!`r`nTitle=`"AnasTV`"`r`nProgress=`"no`"`r`nRunProgram=`"AnasTV.exe`"`r`n;!@InstallEnd@!`r`n"[0m
+2026-11-24T07:32:08.1539950Z [36;1m  [System.IO.File]::WriteAllText($cfgPath, $cfgText, [System.Text.UTF8Encoding]::new($false))[0m
+2026-11-24T07:32:08.1540292Z [36;1m  $parts += $cfgPath[0m
+2026-11-24T07:32:08.1540480Z [36;1m}[0m
+2026-11-24T07:32:08.1540631Z [36;1m$parts += $payload7z[0m
+2026-11-24T07:32:08.1540801Z [36;1m[0m
+2026-11-24T07:32:08.1541026Z [36;1m$outExe = Join-Path (Resolve-Path "build").Path "AnasTV.exe"[0m
+2026-11-24T07:32:08.1541743Z [36;1mif (Test-Path $outExe) { Remove-Item $outExe -Force }[0m
+2026-11-24T07:32:08.1542043Z [36;1m$outStream = [System.IO.File]::Create($outExe)[0m
+2026-11-24T07:32:08.1542280Z [36;1mtry {[0m
+2026-11-24T07:32:08.1542443Z [36;1m  foreach ($part in $parts) {[0m
+2026-11-24T07:32:08.1542695Z [36;1m    $inStream = [System.IO.File]::OpenRead($part)[0m
+2026-11-24T07:32:08.1542924Z [36;1m    try {[0m
+2026-11-24T07:32:08.1543104Z [36;1m      $inStream.CopyTo($outStream)[0m
+2026-11-24T07:32:08.1543323Z [36;1m    } finally {[0m
+2026-11-24T07:32:08.1543502Z [36;1m      $inStream.Dispose()[0m
+2026-11-24T07:32:08.1543695Z [36;1m    }[0m
+2026-11-24T07:32:08.1543834Z [36;1m  }[0m
+2026-11-24T07:32:08.1543978Z [36;1m} finally {[0m
+2026-11-24T07:32:08.1544150Z [36;1m  $outStream.Dispose()[0m
+2026-11-24T07:32:08.1544327Z [36;1m}[0m
+2026-11-24T07:32:08.1544481Z [36;1mif (-not (Test-Path $outExe)) {[0m
+2026-11-24T07:32:08.1544748Z [36;1m  throw "Failed to assemble single standalone AnasTV.exe"[0m
+2026-11-24T07:32:08.1544996Z [36;1m}[0m
+2026-11-24T07:32:08.1545200Z [36;1m$exeMb = [math]::Round((Get-Item $outExe).Length / 1MB, 2)[0m
+2026-11-24T07:32:08.1545518Z [36;1mWrite-Host "Built single standalone AnasTV.exe ($exeMb MB)"[0m
+2026-11-24T07:32:08.1603249Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+2026-11-24T07:32:08.1603567Z env:
+2026-11-24T07:32:08.1603813Z   FLUTTER_ROOT: C:\hostedtoolcache\windows\flutter\stable-3.50.1-x64/flutter
+2026-11-24T07:32:08.1604172Z   PUB_CACHE: C:\Users\runneradmin\AppData\Local\Pub\Cache
+2026-11-24T07:32:08.1604412Z ##[endgroup]
+2026-11-24T07:32:11.5911902Z [31;1mException: [0mD:\a\_temp\f8736aae-3cb7-40ba-abd9-98327c4a9b24.ps1:80[0m
+2026-11-24T07:32:11.5912544Z [31;1m[0m[36;1mLine |[0m
+2026-11-24T07:32:11.5913404Z [31;1m[0m[36;1m[36;1m  80 | [0m   [36;1mthrow "No supported installer SFX found in extra archive. Files: $a[0m …[0m
+2026-11-24T07:32:11.5914384Z [31;1m[0m[36;1m[36;1m[0m[36;1m[0m[36;1m     | [31;1m   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+2026-11-24T07:32:11.5915450Z [31;1m[0m[36;1m[36;1m[0m[36;1m[0m[36;1m[31;1m[31;1m[36;1m     | [31;1mNo supported installer SFX found in extra archive. Files: D:\a\_temp\anas_sfx\extra\7za.dll,[0m
+2026-11-24T07:32:11.5916874Z [31;1m[0m[36;1m[36;1m[0m[36;1m[0m[36;1m[31;1m[31;1m[36;1m[31;1m[36;1m     | [31;1mD:\a\_temp\anas_sfx\extra\7za.exe, D:\a\_temp\anas_sfx\extra\7zxa.dll, D:\a\_temp\anas_sfx\extra\history.txt,[0m
+2026-11-24T07:32:11.5919957Z [31;1m[0m[36;1m[36;1m[0m[36;1m[0m[36;1m[31;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m     | [31;1mD:\a\_temp\anas_sfx\extra\License.txt, D:\a\_temp\anas_sfx\extra\readme.txt,[0m
+2026-11-24T07:32:11.5921266Z [31;1m[0m[36;1m[36;1m[0m[36;1m[0m[36;1m[31;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m     | [31;1mD:\a\_temp\anas_sfx\extra\Far\7-ZipEng.hlf, D:\a\_temp\anas_sfx\extra\Far\7-ZipEng.lng,[0m
+2026-11-24T07:32:11.5922973Z [31;1m[0m[36;1m[36;1m[0m[36;1m[0m[36;1m[31;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m     | [31;1mD:\a\_temp\anas_sfx\extra\Far\7-ZipFar.dll, D:\a\_temp\anas_sfx\extra\Far\7-ZipFar64.dll,[0m
+2026-11-24T07:32:11.5923931Z [31;1m[0m[36;1m[36;1m[0m[36;1m[0m[36;1m[31;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m     | [31;1mD:\a\_temp\anas_sfx\extra\Far\7-ZipRus.hlf, D:\a\_temp\anas_sfx\extra\Far\7-ZipRus.lng,[0m
+2026-11-24T07:32:11.5924975Z [31;1m[0m[36;1m[36;1m[0m[36;1m[0m[36;1m[31;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m     | [31;1mD:\a\_temp\anas_sfx\extra\Far\7zToFar.ini, D:\a\_temp\anas_sfx\extra\Far\far7z.reg,[0m
+2026-11-24T07:32:11.5926293Z [31;1m[0m[36;1m[36;1m[0m[36;1m[0m[36;1m[31;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m     | [31;1mD:\a\_temp\anas_sfx\extra\Far\far7z.txt, D:\a\_temp\anas_sfx\extra\x64\7za.dll,[0m
+2026-11-24T07:32:11.5927435Z [31;1m[0m[36;1m[36;1m[0m[36;1m[0m[36;1m[31;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m[31;1m[36;1m     | [31;1mD:\a\_temp\anas_sfx\extra\x64\7za.exe, D:\a\_temp\anas_sfx\extra\x64\7zxa.dll[0m
+2026-11-24T07:32:11.6528144Z ##[error]Process completed with exit code 1.
+2026-11-24T07:32:11.6770840Z Post job cleanup.
+2026-11-24T07:32:11.6774968Z ##[start-action display=Cache pub dependencies;id=__5e0e44ac-83d4-4bb7-a600-3fa51bcb7b29.cache-pub]
+2026-11-24T07:32:11.6776899Z ##[end-action id=__5e0e44ac-83d4-4bb7-a600-3fa51bcb7b29.cache-pub;outcome=skipped;conclusion=skipped;duration_ms=0]
+2026-11-24T07:32:11.6778244Z ##[start-action display=Cache Flutter;id=__5e0e44ac-83d4-4bb7-a600-3fa51bcb7b29.cache-flutter]
+2026-11-24T07:32:11.6779658Z ##[end-action id=__5e0e44ac-83d4-4bb7-a600-3fa51bcb7b29.cache-flutter;outcome=skipped;conclusion=skipped;duration_ms=0]
+2026-11-24T07:32:11.6924729Z Post job cleanup.
+2026-11-24T07:32:11.8385614Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-11-24T07:32:11.8669313Z git version 2.56.1.windows.1
+2026-11-24T07:32:11.8721029Z Temporarily overriding HOME='D:\a\_temp\eac544f3-1d0f-413c-ad91-39ecfef6503d' before making global git config changes
+2026-11-24T07:32:11.8721630Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-24T07:32:11.8729597Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\jio-tv-set-top-box\jio-tv-set-top-box
+2026-11-24T07:32:11.9031203Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-11-24T07:32:11.9324786Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-11-24T07:32:12.3787255Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-24T07:32:12.4052720Z http.https://github.com/.extraheader
+2026-11-24T07:32:12.4087979Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all http.https://github.com/.extraheader
+2026-11-24T07:32:12.4384981Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-11-24T07:32:12.8824357Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-24T07:32:12.9163733Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-11-24T07:32:13.3901670Z Cleaning up orphan processes
+2026-11-24T07:32:13.4136009Z Terminate orphan process: pid (6828) (vctip)
+2026-11-24T07:32:13.4203621Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
