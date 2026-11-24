@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'pc_cenc_decryptor.dart';
+import 'pc_dash_to_hls.dart';
+import 'pc_trace_log.dart';
 
 class PcProxySession {
   final String streamUrl;
@@ -12,6 +14,7 @@ class PcProxySession {
   final Map<String, String> clearKeys;
   final bool decryptMode;
   final PcTrackCryptoStore trackCrypto = PcTrackCryptoStore();
+  final Map<String, PcHlsTrackSequenceState> hlsSeqStates = {};
   Uri? lastManifestOrigin;
 
   PcProxySession({
@@ -72,6 +75,10 @@ class PcLocalPlayerServer {
 
   String toDecryptProxyUrl(int sid, String rawUrl) => _buildProxyUrl('dec', sid, rawUrl);
 
+  String toHlsProxyUrl(int sid, String rawUrl) {
+    return 'http://127.0.0.1:$port/hls/$sid/master.m3u8?src=${Uri.encodeQueryComponent(rawUrl)}';
+  }
+
   String _buildProxyUrl(String prefix, int sid, String rawUrl) {
     final uri = Uri.tryParse(rawUrl);
     if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
@@ -114,6 +121,11 @@ class PcLocalPlayerServer {
 
       if (path.startsWith('/drm/')) {
         await _handleDrmProxy(req);
+        return;
+      }
+
+      if (path.startsWith('/hls/')) {
+        await _handleHlsManifest(req);
         return;
       }
 
@@ -176,6 +188,188 @@ class PcLocalPlayerServer {
     session.lastManifestOrigin = Uri.parse('$scheme://$authority');
 
     await _forwardStream(req, sid, session, upstreamUri, decryptMode: decryptMode);
+  }
+
+  Future<void> _handleHlsManifest(HttpRequest req) async {
+    final segments = req.uri.pathSegments;
+    if (segments.length < 3) {
+      req.response.statusCode = HttpStatus.badRequest;
+      await req.response.close();
+      return;
+    }
+    final sid = int.tryParse(segments[1]);
+    final action = segments[2].toLowerCase();
+    final session = sid != null ? _sessions[sid] : null;
+    final srcRaw = req.uri.queryParameters['src'] ?? session?.streamUrl ?? '';
+    final initialUri = Uri.tryParse(srcRaw);
+
+    if (sid == null || session == null || initialUri == null || !initialUri.hasScheme) {
+      req.response.statusCode = HttpStatus.gone;
+      await req.response.close();
+      return;
+    }
+
+    try {
+      var currentUri = initialUri;
+      HttpClientResponse? finalRes;
+      for (var hop = 0; hop < 6; hop++) {
+        final outReq = await _httpClient.getUrl(currentUri);
+        outReq.followRedirects = false;
+        session.headers.forEach((k, v) {
+          if (k.trim().isNotEmpty && v.trim().isNotEmpty) {
+            outReq.headers.set(k, v);
+          }
+        });
+        final res = await outReq.close();
+        if (res.statusCode >= 300 && res.statusCode < 400) {
+          final loc = res.headers.value(HttpHeaders.locationHeader);
+          await res.drain<void>();
+          if (loc != null && loc.isNotEmpty) {
+            currentUri = currentUri.resolve(loc);
+            continue;
+          }
+        }
+        finalRes = res;
+        break;
+      }
+
+      if (finalRes == null) {
+        req.response.statusCode = HttpStatus.badGateway;
+        await req.response.close();
+        return;
+      }
+
+      session.lastManifestOrigin = Uri.parse('${currentUri.scheme}://${currentUri.authority}');
+      final rawBytes = await finalRes.fold<List<int>>([], (a, b) => a..addAll(b));
+
+      if (finalRes.statusCode != HttpStatus.ok) {
+        req.response.statusCode = finalRes.statusCode;
+        req.response.add(rawBytes);
+        await req.response.close();
+        return;
+      }
+
+      final text = utf8.decode(rawBytes, allowMalformed: true);
+      if (text.trimLeft().startsWith('#EXTM3U')) {
+        final rewritten = _rewriteM3u8Urls(text, sid, currentUri);
+        final outBytes = utf8.encode(rewritten);
+        req.response.statusCode = HttpStatus.ok;
+        req.response.headers.set(HttpHeaders.contentTypeHeader, 'application/vnd.apple.mpegurl; charset=utf-8');
+        req.response.headers.set('Cache-Control', 'no-store');
+        req.response.contentLength = outBytes.length;
+        req.response.add(outBytes);
+        await req.response.close();
+        return;
+      }
+
+      if (text.contains('<MPD')) {
+        final parsed = PcDashToHlsConverter.parse(text, currentUri);
+        if (parsed != null && parsed.isConvertible) {
+          if (action == 'master.m3u8') {
+            PcTraceLog.write(
+              'hls: converted mpd->master sid=$sid videos=${parsed.videos.length} audios=${parsed.audios.length} dynamic=${parsed.isDynamic}',
+            );
+            final m3u8 = PcDashToHlsConverter.buildMasterM3u8(
+              parsed,
+              buildTrackUrl: (track) =>
+                  'http://127.0.0.1:$port/hls/$sid/track.m3u8?src=${Uri.encodeQueryComponent(currentUri.toString())}&kind=${track.kind}&rep=${Uri.encodeQueryComponent(track.id)}&idx=${track.indexInKind}',
+            );
+            final outBytes = utf8.encode(m3u8);
+            req.response.statusCode = HttpStatus.ok;
+            req.response.headers.set(HttpHeaders.contentTypeHeader, 'application/vnd.apple.mpegurl; charset=utf-8');
+            req.response.headers.set('Cache-Control', 'no-store');
+            req.response.contentLength = outBytes.length;
+            req.response.add(outBytes);
+            await req.response.close();
+            return;
+          } else {
+            final kind = (req.uri.queryParameters['kind'] ?? 'video').toLowerCase();
+            final rep = req.uri.queryParameters['rep'] ?? '';
+            final idx = int.tryParse(req.uri.queryParameters['idx'] ?? '0') ?? 0;
+            final pool = kind == 'audio' ? parsed.audios : parsed.videos;
+            if (pool.isEmpty) {
+              req.response.statusCode = HttpStatus.notFound;
+              await req.response.close();
+              return;
+            }
+            PcDashTrack selected = pool.first;
+            if (rep.isNotEmpty) {
+              selected = pool.firstWhere(
+                (t) => t.id == rep,
+                orElse: () => pool[idx.clamp(0, pool.length - 1)],
+              );
+            } else {
+              selected = pool[idx.clamp(0, pool.length - 1)];
+            }
+
+            final seqKey = '$kind|${selected.id}|$idx';
+            final seqState = session.hlsSeqStates.putIfAbsent(
+              seqKey,
+              () => PcHlsTrackSequenceState(),
+            );
+            final trackM3u8 = PcDashToHlsConverter.buildTrackM3u8(
+              parsed,
+              selected,
+              seqState: seqState,
+              toDecryptUrl: (segUrl) => toDecryptProxyUrl(sid, segUrl),
+            );
+            final outBytes = utf8.encode(trackM3u8);
+            req.response.statusCode = HttpStatus.ok;
+            req.response.headers.set(HttpHeaders.contentTypeHeader, 'application/vnd.apple.mpegurl; charset=utf-8');
+            req.response.headers.set('Cache-Control', 'no-store');
+            req.response.contentLength = outBytes.length;
+            req.response.add(outBytes);
+            await req.response.close();
+            return;
+          }
+        }
+        PcTraceLog.write('hls: mpd had no SegmentTemplate, falling back to /dec/ sid=$sid');
+      }
+
+      req.response.statusCode = HttpStatus.found;
+      req.response.headers.set(
+        HttpHeaders.locationHeader,
+        toDecryptProxyUrl(sid, currentUri.toString()),
+      );
+      await req.response.close();
+    } catch (e) {
+      PcTraceLog.write('hls: error $e');
+      try {
+        req.response.statusCode = HttpStatus.badGateway;
+        req.response.write('HLS wrapper error: $e');
+        await req.response.close();
+      } catch (_) {}
+    }
+  }
+
+  String _rewriteM3u8Urls(String text, int sid, Uri baseUri) {
+    final lines = const LineSplitter().convert(text);
+    final out = StringBuffer();
+    for (final line in lines) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) {
+        out.writeln();
+        continue;
+      }
+      if (trimmed.startsWith('#')) {
+        final rewrittenTag = line.replaceAllMapped(
+          RegExp(r'URI="([^"]+)"'),
+          (m) {
+            final resolved = baseUri.resolve(m.group(1)!).toString();
+            return 'URI="${toDecryptProxyUrl(sid, resolved)}"';
+          },
+        );
+        out.writeln(rewrittenTag);
+      } else {
+        final resolved = baseUri.resolve(trimmed).toString();
+        if (resolved.toLowerCase().contains('.m3u8')) {
+          out.writeln(toHlsProxyUrl(sid, resolved));
+        } else {
+          out.writeln(toDecryptProxyUrl(sid, resolved));
+        }
+      }
+    }
+    return out.toString();
   }
 
   Future<void> _forwardStream(

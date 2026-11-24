@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'pc_models.dart';
 import 'pc_mpv_player_view.dart';
 import 'pc_shaka_player_view.dart';
+import 'pc_trace_log.dart';
 
 class AnasTvPcApp extends StatelessWidget {
   const AnasTvPcApp({super.key});
@@ -1022,6 +1023,7 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
         });
       },
       onHevcUnsupported: (diag) {
+        PcTraceLog.write('ui: onHevcUnsupported channel=${_playingChannel.name} diag=$diag');
         if (!mounted || _closing || _useMpvEngine || _fallbackInProgress) return;
         _fallbackToMpv();
       },
@@ -1078,6 +1080,7 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
     if (!mounted || _closing || _useMpvEngine || _fallbackInProgress || resolved == null) return;
     _fallbackInProgress = true;
     final reqSeq = _playRequestSeq;
+    PcTraceLog.write('ui: _fallbackToMpv start url=${resolved.streamUrl}');
     try {
       await _shaka.stop().catchError((_) {});
       if (!mounted || _closing || reqSeq != _playRequestSeq) return;
@@ -1107,6 +1110,7 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
 
       await mpv.play(resolved);
     } catch (e) {
+      PcTraceLog.write('ui: _fallbackToMpv error $e');
       if (!mounted || reqSeq != _playRequestSeq) return;
       _watchdog?.cancel();
       setState(() {
@@ -1706,7 +1710,12 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
             child: Stack(
               fit: StackFit.expand,
               children: [
-                Positioned.fill(child: _shaka.buildView()),
+                Positioned.fill(
+                  child: Offstage(
+                    offstage: _useMpvEngine,
+                    child: _shaka.buildView(),
+                  ),
+                ),
                 if (_useMpvEngine && _mpv != null && _mpv!.isInitialized)
                   Positioned.fill(child: _mpv!.buildView()),
                 if (_loading) const Center(child: PcBrandCircularLoader(size: 84)),

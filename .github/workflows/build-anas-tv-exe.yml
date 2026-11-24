@@ -46,6 +46,9 @@ jobs:
           if (Test-Path "windows/CMakeLists.txt") {
             $cmake = Get-Content "windows/CMakeLists.txt" -Raw
             $cmake = $cmake -replace 'set\(\s*BINARY_NAME\s+"[^"]+"\s*\)', 'set(BINARY_NAME "AnasTV")'
+            if ($cmake -notmatch '_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR') {
+              $cmake = $cmake -replace '(cmake_minimum_required\([^\r\n]+\))', "`$1`r`nadd_compile_definitions(_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)"
+            }
             Set-Content "windows/CMakeLists.txt" $cmake -NoNewline
           }
           if (Test-Path "windows/runner/main.cpp") {
@@ -99,7 +102,7 @@ jobs:
           }
 
           # Bundle Visual C++ x64 runtime DLLs so fresh Windows PCs never crash on startup
-          foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll", "vcruntime140_threads.dll", "msvcp140.dll", "msvcp140_1.dll")) {
+          foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll", "vcruntime140_threads.dll", "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll", "msvcp140_atomic_wait.dll", "concrt140.dll")) {
             $sysDll = Join-Path $env:WINDIR "System32\$dll"
             $dstDll = Join-Path $releaseDir $dll
             if ((Test-Path $sysDll) -and (-not (Test-Path $dstDll))) {

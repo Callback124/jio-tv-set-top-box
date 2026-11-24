@@ -4,11 +4,12 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'pc_models.dart';
 import 'pc_proxy_server.dart';
+import 'pc_trace_log.dart';
 
 /// Shared singleton native MPV/VideoController engine for Windows.
-/// Reusing a single native Player + VideoController with software surface rendering
-/// (`enableHardwareAcceleration: false`, `hwdec: no`) prevents ANGLE/Direct3D11 crashes
-/// and Windows FFI disposal race crashes (`Callback invoked after it has been deleted`).
+/// Reusing a single native Player + VideoController with fixed software surface
+/// (`enableHardwareAcceleration: false`, `width: 1280`, `height: 720`, `hwdec: no`)
+/// prevents ANGLE/Direct3D11 crashes and Windows FFI disposal race crashes.
 class _MpvSharedEngine {
   _MpvSharedEngine._();
   static final _MpvSharedEngine instance = _MpvSharedEngine._();
@@ -36,39 +37,62 @@ class _MpvSharedEngine {
 
   Future<void> ensureInitialized() {
     if (isReady) return Future<void>.value();
-    return _initFuture ??= _initInternal().catchError((e) {
+    return _initFuture ??= _initInternal().catchError((e, st) {
+      PcTraceLog.write('mpv: _initInternal error: $e\n$st');
       _initFuture = null;
       throw e;
     });
   }
 
   Future<void> _initInternal() async {
+    PcTraceLog.write('mpv: creating Player');
     final player = Player(
       configuration: const PlayerConfiguration(
         osc: false,
         libass: false,
-        logLevel: MPVLogLevel.error,
+        logLevel: MPVLogLevel.warn,
       ),
     );
     _player = player;
+    PcTraceLog.write('mpv: Player created');
 
-    if (player.platform is NativePlayer) {
-      final native = player.platform as NativePlayer;
-      await native.setProperty('hwdec', 'no').catchError((_) {});
-      await native.setProperty('vd-lavc-threads', '0').catchError((_) {});
-      await native.setProperty('cache', 'yes').catchError((_) {});
-      await native.setProperty('demuxer-max-bytes', '32MiB').catchError((_) {});
-      await native.setProperty('hr-seek', 'no').catchError((_) {});
-    }
-
+    PcTraceLog.write('mpv: creating VideoController(sw 1280x720, hwdec=no)');
     final controller = VideoController(
       player,
       configuration: const VideoControllerConfiguration(
         enableHardwareAcceleration: false,
+        hwdec: 'no',
+        width: 1280,
+        height: 720,
       ),
     );
     _videoController = controller;
+
+    PcTraceLog.write('mpv: awaiting controller.platform.future');
     await controller.platform.future;
+    PcTraceLog.write('mpv: controller.platform.future ready');
+
+    if (player.platform is NativePlayer) {
+      final native = player.platform as NativePlayer;
+      await native.setProperty('hwdec', 'no').catchError((_) {});
+      await native.setProperty('vd-lavc-threads', '4').catchError((_) {});
+      await native.setProperty('cache', 'yes').catchError((_) {});
+      await native.setProperty('demuxer-max-bytes', '32MiB').catchError((_) {});
+      await native.setProperty('hr-seek', 'no').catchError((_) {});
+      await native.setProperty('sid', 'no').catchError((_) {});
+      await native.setProperty('sub-auto', 'no').catchError((_) {});
+      await native.setProperty('audio-display', 'no').catchError((_) {});
+      await native.setProperty('network-timeout', '15').catchError((_) {});
+      PcTraceLog.write('mpv: post-controller native properties applied');
+    }
+
+    _subs.add(
+      player.stream.log.listen((entry) {
+        if (entry.level == 'error' || entry.level == 'fatal' || entry.level == 'warn') {
+          PcTraceLog.write('libmpv[${entry.level}/${entry.prefix}]: ${entry.text.trim()}');
+        }
+      }),
+    );
 
     _subs.add(
       player.stream.buffering.listen((buffering) {
@@ -86,6 +110,7 @@ class _MpvSharedEngine {
       player.stream.playing.listen((playing) {
         final d = _activeDelegate;
         if (d != null && playing) {
+          PcTraceLog.write('mpv: playing=true');
           d.onStateChanged('ready');
         }
       }),
@@ -114,10 +139,11 @@ class _MpvSharedEngine {
 
     _subs.add(
       player.stream.error.listen((msg) {
-        final d = _activeDelegate;
-        if (d == null) return;
         final clean = msg.trim();
         if (clean.isEmpty) return;
+        PcTraceLog.write('mpv: stream.error: $clean');
+        final d = _activeDelegate;
+        if (d == null) return;
         if (clean.toLowerCase().contains('failed to open') ||
             clean.toLowerCase().contains('error') ||
             clean.toLowerCase().contains('recognized')) {
@@ -127,6 +153,7 @@ class _MpvSharedEngine {
     );
 
     _ready = true;
+    PcTraceLog.write('mpv: engine _ready=true');
   }
 }
 
@@ -271,13 +298,16 @@ class PcMpvPlayerController {
       ),
     );
 
-    final targetUrl = _server.toDecryptProxyUrl(sid, playback.streamUrl);
+    final targetUrl = _server.toHlsProxyUrl(sid, playback.streamUrl);
+    PcTraceLog.write('mpv: player.open($targetUrl)');
     try {
       await player.open(Media(targetUrl), play: true);
+      PcTraceLog.write('mpv: player.open completed');
       if (!_disposed) {
         await player.setVolume(_muted ? 0.0 : (_volume * 100.0)).catchError((_) {});
       }
     } catch (e) {
+      PcTraceLog.write('mpv: player.open threw $e');
       if (!_disposed) {
         onError('HEVC playback failed: $e');
       }
