@@ -137,13 +137,30 @@ jobs:
             throw "Failed to download 7-Zip Extra SFX module"
           }
 
-          & $sevenZip e $extra7z "-o$sfxWork" "7zS.sfx" -y
-          $sfxStub = Join-Path $sfxWork "7zS.sfx"
-          if (-not (Test-Path $sfxStub)) {
-            throw "7zS.sfx not found after extracting extra archive"
-          }
+          $sfxExtracted = Join-Path $sfxWork "extra"
+          & $sevenZip x $extra7z "-o$sfxExtracted" -y | Out-Null
 
-          # Compress Release directory using LZMA (required by 7zS.sfx)
+          $sfxStubItem = $null
+          $needsConfig = $true
+          foreach ($candidateName in @("7zSD.sfx", "7zS.sfx", "7zS2.sfx")) {
+            $matches = Get-ChildItem -Path $sfxExtracted -Recurse -Filter $candidateName -File | Sort-Object {
+              if ($_.FullName -match 'x64|amd64') { 0 } elseif ($_.FullName -match 'arm') { 2 } else { 1 }
+            }
+            $picked = $matches | Select-Object -First 1
+            if ($picked) {
+              $sfxStubItem = $picked
+              $needsConfig = ($candidateName -ne "7zS2.sfx")
+              break
+            }
+          }
+          if (-not $sfxStubItem) {
+            $allFiles = (Get-ChildItem -Path $sfxExtracted -Recurse -File | ForEach-Object { $_.FullName }) -join ", "
+            throw "No supported installer SFX found in extra archive. Files: $allFiles"
+          }
+          $sfxStub = $sfxStubItem.FullName
+          Write-Host "Using SFX module: $sfxStub (config=$needsConfig)"
+
+          # Compress Release directory using LZMA (compatible with all 7-Zip SFX modules)
           $payload7z = Join-Path $sfxWork "payload.7z"
           if (Test-Path $payload7z) { Remove-Item $payload7z -Force }
           Push-Location $releaseDir
@@ -156,16 +173,21 @@ jobs:
             throw "payload.7z creation failed"
           }
 
-          # Write UTF-8 (no BOM) config for silent temp extraction + auto cleanup
-          $cfgPath = Join-Path $sfxWork "config.txt"
-          $cfgText = ";!@Install@!UTF-8!`r`nTitle=`"AnasTV`"`r`nProgress=`"no`"`r`nRunProgram=`"AnasTV.exe`"`r`n;!@InstallEnd@!`r`n"
-          [System.IO.File]::WriteAllText($cfgPath, $cfgText, [System.Text.UTF8Encoding]::new($false))
+          # Write UTF-8 (no BOM) config for silent temp extraction + auto cleanup when supported
+          $parts = @($sfxStub)
+          if ($needsConfig) {
+            $cfgPath = Join-Path $sfxWork "config.txt"
+            $cfgText = ";!@Install@!UTF-8!`r`nTitle=`"AnasTV`"`r`nProgress=`"no`"`r`nRunProgram=`"AnasTV.exe`"`r`n;!@InstallEnd@!`r`n"
+            [System.IO.File]::WriteAllText($cfgPath, $cfgText, [System.Text.UTF8Encoding]::new($false))
+            $parts += $cfgPath
+          }
+          $parts += $payload7z
 
           $outExe = Join-Path (Resolve-Path "build").Path "AnasTV.exe"
           if (Test-Path $outExe) { Remove-Item $outExe -Force }
           $outStream = [System.IO.File]::Create($outExe)
           try {
-            foreach ($part in @($sfxStub, $cfgPath, $payload7z)) {
+            foreach ($part in $parts) {
               $inStream = [System.IO.File]::OpenRead($part)
               try {
                 $inStream.CopyTo($outStream)
