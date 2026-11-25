@@ -16,6 +16,11 @@ class PcProxySession {
   final PcTrackCryptoStore trackCrypto = PcTrackCryptoStore();
   final Map<String, PcHlsTrackSequenceState> hlsSeqStates = {};
   Uri? lastManifestOrigin;
+  PcParsedDashManifest? cachedMpd;
+  Uri? cachedMpdUri;
+  DateTime? cachedMpdAt;
+  bool loggedInit = false;
+  bool loggedMedia = false;
 
   PcProxySession({
     required this.streamUrl,
@@ -210,6 +215,58 @@ class PcLocalPlayerServer {
     }
 
     try {
+      final cacheAgeMs = session.cachedMpdAt != null
+          ? DateTime.now().difference(session.cachedMpdAt!).inMilliseconds
+          : 999999;
+      if (session.cachedMpd != null &&
+          session.cachedMpdUri != null &&
+          cacheAgeMs >= 0 &&
+          cacheAgeMs < 1500 &&
+          (action != 'master.m3u8' || session.cachedMpdUri.toString() == initialUri.toString())) {
+        final parsed = session.cachedMpd!;
+        final currentUri = session.cachedMpdUri!;
+        if (action == 'master.m3u8') {
+          final m3u8 = PcDashToHlsConverter.buildMasterM3u8(
+            parsed,
+            buildTrackUrl: (track) =>
+                'http://127.0.0.1:$port/hls/$sid/track.m3u8?src=${Uri.encodeQueryComponent(currentUri.toString())}&kind=${track.kind}&rep=${Uri.encodeQueryComponent(track.id)}&idx=${track.indexInKind}',
+          );
+          final outBytes = utf8.encode(m3u8);
+          req.response.statusCode = HttpStatus.ok;
+          req.response.headers.set(HttpHeaders.contentTypeHeader, 'application/vnd.apple.mpegurl; charset=utf-8');
+          req.response.headers.set('Cache-Control', 'no-store');
+          req.response.contentLength = outBytes.length;
+          req.response.add(outBytes);
+          await req.response.close();
+          return;
+        }
+        final kind = (req.uri.queryParameters['kind'] ?? 'video').toLowerCase();
+        final rep = req.uri.queryParameters['rep'] ?? '';
+        final idx = int.tryParse(req.uri.queryParameters['idx'] ?? '0') ?? 0;
+        final pool = kind == 'audio' ? parsed.audios : parsed.videos;
+        if (pool.isNotEmpty) {
+          final selected = rep.isNotEmpty
+              ? pool.firstWhere((t) => t.id == rep, orElse: () => pool[idx.clamp(0, pool.length - 1)])
+              : pool[idx.clamp(0, pool.length - 1)];
+          final seqKey = '$kind|${selected.id}|$idx';
+          final seqState = session.hlsSeqStates.putIfAbsent(seqKey, () => PcHlsTrackSequenceState());
+          final trackM3u8 = PcDashToHlsConverter.buildTrackM3u8(
+            parsed,
+            selected,
+            seqState: seqState,
+            toDecryptUrl: (segUrl) => toDecryptProxyUrl(sid, segUrl),
+          );
+          final outBytes = utf8.encode(trackM3u8);
+          req.response.statusCode = HttpStatus.ok;
+          req.response.headers.set(HttpHeaders.contentTypeHeader, 'application/vnd.apple.mpegurl; charset=utf-8');
+          req.response.headers.set('Cache-Control', 'no-store');
+          req.response.contentLength = outBytes.length;
+          req.response.add(outBytes);
+          await req.response.close();
+          return;
+        }
+      }
+
       var currentUri = initialUri;
       HttpClientResponse? finalRes;
       for (var hop = 0; hop < 6; hop++) {
@@ -234,6 +291,7 @@ class PcLocalPlayerServer {
       }
 
       if (finalRes == null) {
+        PcTraceLog.write('hls: badGateway (no finalRes) sid=$sid');
         req.response.statusCode = HttpStatus.badGateway;
         await req.response.close();
         return;
@@ -243,6 +301,7 @@ class PcLocalPlayerServer {
       final rawBytes = await finalRes.fold<List<int>>([], (a, b) => a..addAll(b));
 
       if (finalRes.statusCode != HttpStatus.ok) {
+        PcTraceLog.write('hls: upstream status=${finalRes.statusCode} uri=$currentUri');
         req.response.statusCode = finalRes.statusCode;
         req.response.add(rawBytes);
         await req.response.close();
@@ -265,6 +324,9 @@ class PcLocalPlayerServer {
       if (text.contains('<MPD')) {
         final parsed = PcDashToHlsConverter.parse(text, currentUri);
         if (parsed != null && parsed.isConvertible) {
+          session.cachedMpd = parsed;
+          session.cachedMpdUri = currentUri;
+          session.cachedMpdAt = DateTime.now();
           if (action == 'master.m3u8') {
             PcTraceLog.write(
               'hls: converted mpd->master sid=$sid videos=${parsed.videos.length} audios=${parsed.audios.length} dynamic=${parsed.isDynamic}',
@@ -457,6 +519,10 @@ class PcLocalPlayerServer {
         return;
       }
 
+      if (decryptMode && upRes.statusCode >= 400) {
+        PcTraceLog.write('dec: upstream http=${upRes.statusCode} uri=$upstreamUri');
+      }
+
       final isSegmentCandidate = decryptMode &&
           req.method == 'GET' &&
           (upRes.statusCode == HttpStatus.ok || upRes.statusCode == HttpStatus.partialContent) &&
@@ -469,20 +535,36 @@ class PcLocalPlayerServer {
           builder.add(chunk);
         }
         var segBytes = builder.toBytes();
+        final origLen = segBytes.length;
         if (segBytes.length >= 16) {
           try {
-            segBytes = PcCencDecryptor.processInitSegment(
+            final afterInit = PcCencDecryptor.processInitSegment(
               segBytes,
               upstreamUri.path,
               session.trackCrypto,
             );
-            segBytes = PcCencDecryptor.processMediaSegment(
+            if (!identical(afterInit, segBytes) && !session.loggedInit) {
+              session.loggedInit = true;
+              PcTraceLog.write('dec: init stripped sinf ($origLen -> ${afterInit.length}) path=${upstreamUri.path}');
+            }
+            segBytes = afterInit;
+            final afterMedia = PcCencDecryptor.processMediaSegment(
               segBytes,
               upstreamUri.path,
               session.trackCrypto,
               session.clearKeys,
             );
-          } catch (_) {}
+            if (!identical(afterMedia, segBytes) && !session.loggedMedia) {
+              session.loggedMedia = true;
+              PcTraceLog.write('dec: media decrypted (${afterMedia.length} bytes) path=${upstreamUri.path}');
+            }
+            segBytes = afterMedia;
+          } catch (e) {
+            PcTraceLog.write('dec: exception $e on ${upstreamUri.path}');
+          }
+        }
+        if (segBytes.length != origLen) {
+          req.response.headers.removeAll('content-range');
         }
         req.response.contentLength = segBytes.length;
         req.response.add(segBytes);

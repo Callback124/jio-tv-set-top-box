@@ -307,6 +307,17 @@ class PcDashToHlsConverter {
     final suggestedDelaySec = _parseIsoDurationSec(mpd.attr('suggestedPresentationDelay'));
     final mediaPresDurSec = _parseIsoDurationSec(mpd.attr('mediaPresentationDuration'));
 
+    bool looksVideo(String ct, String mt, String codecs, String w, String h) {
+      if (ct == 'video' || mt.startsWith('video/')) return true;
+      if (w.isNotEmpty || h.isNotEmpty) return true;
+      return RegExp(r'(avc|hev|hvc|vp8|vp9|av01|mp4v|dvh|dvhe)', caseSensitive: false).hasMatch(codecs);
+    }
+
+    bool looksAudio(String ct, String mt, String codecs) {
+      if (ct == 'audio' || mt.startsWith('audio/')) return true;
+      return RegExp(r'(mp4a|ec-3|ac-3|ac-4|opus|vorbis|flac)', caseSensitive: false).hasMatch(codecs);
+    }
+
     final mpdBase = _resolveBase(manifestUri, mpd);
     final periods = mpd.childrenNamed('Period').toList();
     final activePeriod = periods.isEmpty
@@ -315,10 +326,14 @@ class PcDashToHlsConverter {
             (p) => p.childrenNamed('AdaptationSet').any((a) {
               final ct = (a.attr('contentType') ?? '').toLowerCase();
               final mt = (a.attr('mimeType') ?? '').toLowerCase();
-              return ct == 'video' ||
-                  ct == 'audio' ||
-                  mt.startsWith('video/') ||
-                  mt.startsWith('audio/');
+              final ac = a.attr('codecs') ?? '';
+              if (looksVideo(ct, mt, ac, a.attr('width') ?? '', a.attr('height') ?? '') ||
+                  looksAudio(ct, mt, ac)) {
+                return true;
+              }
+              return a.childrenNamed('Representation').any((r) =>
+                  looksVideo(ct, (r.attr('mimeType') ?? '').toLowerCase(), r.attr('codecs') ?? '', r.attr('width') ?? '', r.attr('height') ?? '') ||
+                  looksAudio(ct, (r.attr('mimeType') ?? '').toLowerCase(), r.attr('codecs') ?? ''));
             }),
             orElse: () => periods.last,
           );
@@ -355,15 +370,19 @@ class PcDashToHlsConverter {
           RegExp(r'stpp|wvtt', caseSensitive: false).hasMatch(aCodecs);
       if (isText) continue;
 
-      final isAudio = aCt == 'audio' || aMime.startsWith('audio/');
-      final isVideo = aCt == 'video' || aMime.startsWith('video/');
-      if (!isAudio && !isVideo) continue;
-
       final adaptBase = _resolveBase(periodBase, aset);
       final adaptTpl = _mergeTemplate(periodTpl, aset);
 
       final reps = aset.childrenNamed('Representation').toList();
       for (final rep in reps) {
+        final rMime = (rep.attr('mimeType') ?? aMime).toLowerCase();
+        final rCodecs = (rep.attr('codecs') ?? aCodecs).trim();
+        final rw = rep.attr('width') ?? aset.attr('width') ?? '';
+        final rh = rep.attr('height') ?? aset.attr('height') ?? '';
+        final isVideo = looksVideo(aCt, rMime, rCodecs, rw, rh);
+        final isAudio = !isVideo && looksAudio(aCt, rMime, rCodecs);
+        if (!isVideo && !isAudio) continue;
+
         final repId = rep.attr('id') ?? '${isVideo ? 'v' : 'a'}_${videos.length + audios.length}';
         final repBase = _resolveBase(adaptBase, rep);
         final tpl = _mergeTemplate(adaptTpl, rep);

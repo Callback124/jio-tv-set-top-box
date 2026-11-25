@@ -1102,9 +1102,12 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
       _watchdog?.cancel();
       _watchdog = Timer(const Duration(seconds: 28), () {
         if (!mounted || reqSeq != _playRequestSeq || !_loading) return;
+        final hint = _mpv?.lastTraceHint;
         setState(() {
           _loading = false;
-          _error = 'HEVC playback timeout (28s). Stream respond nahi kar rahi.';
+          _error = hint != null && hint.isNotEmpty
+              ? 'HEVC playback timeout (28s): $hint'
+              : 'HEVC playback timeout (28s). Stream respond nahi kar rahi.';
         });
       });
 
@@ -1710,9 +1713,15 @@ class _AnasTvPcPlayerScreenState extends State<AnasTvPcPlayerScreen> {
             child: Stack(
               fit: StackFit.expand,
               children: [
-                Positioned.fill(
-                  child: Offstage(
-                    offstage: _useMpvEngine,
+                Positioned(
+                  left: _useMpvEngine ? -4000 : 0,
+                  top: 0,
+                  width: _useMpvEngine ? 1 : null,
+                  height: _useMpvEngine ? 1 : null,
+                  right: _useMpvEngine ? null : 0,
+                  bottom: _useMpvEngine ? null : 0,
+                  child: IgnorePointer(
+                    ignoring: _useMpvEngine,
                     child: _shaka.buildView(),
                   ),
                 ),
