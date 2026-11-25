@@ -1103,11 +1103,12 @@ class _PcSafeImageFetcher {
 
   Future<_PcFetchedAsset?> _downloadAndValidate(String rawUrl, int maxBytes) async {
     try {
-      var currentUri = Uri.tryParse(rawUrl);
-      if (currentUri == null || !currentUri.hasScheme) {
+      final parsed = Uri.tryParse(rawUrl);
+      if (parsed == null || !parsed.hasScheme) {
         _rememberFailed(rawUrl);
         return null;
       }
+      var currentUri = parsed;
 
       HttpClientResponse? finalRes;
       for (var hop = 0; hop < 4; hop++) {
