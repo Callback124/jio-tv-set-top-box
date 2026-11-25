@@ -6,6 +6,8 @@ import 'pc/pc_trace_log.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  PaintingBinding.instance.imageCache.maximumSize = 200;
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 32 << 20;
   PcTraceLog.write('app: startup');
   try {
     MediaKit.ensureInitialized();

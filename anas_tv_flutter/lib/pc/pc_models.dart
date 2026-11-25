@@ -1,8 +1,12 @@
+import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:http/http.dart' as http;
+import 'pc_trace_log.dart';
 
 class PcChannel {
   final int id, categoryId, languageId, order, channelNumber;
@@ -943,6 +947,246 @@ class PcStbChannelNumberOsd extends StatelessWidget {
   }
 }
 
+class _PcFetchedAsset {
+  final Uint8List bytes;
+  final bool isSvg;
+  const _PcFetchedAsset({required this.bytes, required this.isSvg});
+}
+
+class _PcQueuedImageJob {
+  final String url;
+  final int maxBytes;
+  final bool Function() isCancelled;
+  final Completer<_PcFetchedAsset?> completer = Completer<_PcFetchedAsset?>();
+
+  _PcQueuedImageJob({
+    required this.url,
+    required this.maxBytes,
+    required this.isCancelled,
+  });
+}
+
+class _PcSafeImageFetcher {
+  _PcSafeImageFetcher._();
+  static final _PcSafeImageFetcher instance = _PcSafeImageFetcher._();
+
+  static const int _maxConcurrent = 6;
+  static const int _maxCacheEntries = 240;
+  static const int _maxFailedEntries = 1000;
+
+  final HttpClient _client = HttpClient()
+    ..connectionTimeout = const Duration(seconds: 7)
+    ..idleTimeout = const Duration(seconds: 12)
+    ..maxConnectionsPerHost = 6
+    ..badCertificateCallback = (_, __, ___) => true;
+
+  final LinkedHashMap<String, _PcFetchedAsset> _cache = LinkedHashMap<String, _PcFetchedAsset>();
+  final LinkedHashMap<String, bool> _failed = LinkedHashMap<String, bool>();
+  final Map<String, Future<_PcFetchedAsset?>> _inFlight = {};
+  final Queue<_PcQueuedImageJob> _queue = Queue<_PcQueuedImageJob>();
+  int _activeCount = 0;
+
+  _PcFetchedAsset? getCached(String url) {
+    final hit = _cache.remove(url);
+    if (hit != null) {
+      _cache[url] = hit;
+    }
+    return hit;
+  }
+
+  bool isKnownFailed(String url) => _failed.containsKey(url);
+
+  Future<_PcFetchedAsset?> fetch(
+    String url, {
+    required int maxBytes,
+    required bool Function() isCancelled,
+  }) {
+    final cached = getCached(url);
+    if (cached != null) return Future<_PcFetchedAsset?>.value(cached);
+    if (_failed.containsKey(url)) return Future<_PcFetchedAsset?>.value(null);
+    final existing = _inFlight[url];
+    if (existing != null) return existing;
+
+    final job = _PcQueuedImageJob(
+      url: url,
+      maxBytes: maxBytes,
+      isCancelled: isCancelled,
+    );
+    _queue.addLast(job);
+    _pump();
+    return job.completer.future;
+  }
+
+  void _pump() {
+    while (_activeCount < _maxConcurrent && _queue.isNotEmpty) {
+      final job = _queue.removeFirst();
+      if (job.isCancelled()) {
+        if (!job.completer.isCompleted) job.completer.complete(null);
+        continue;
+      }
+      final cached = getCached(job.url);
+      if (cached != null) {
+        if (!job.completer.isCompleted) job.completer.complete(cached);
+        continue;
+      }
+      if (_failed.containsKey(job.url)) {
+        if (!job.completer.isCompleted) job.completer.complete(null);
+        continue;
+      }
+      final existing = _inFlight[job.url];
+      if (existing != null) {
+        existing.then((v) {
+          if (!job.completer.isCompleted) job.completer.complete(v);
+        });
+        continue;
+      }
+
+      _activeCount++;
+      final fut = _downloadAndValidate(job.url, job.maxBytes);
+      _inFlight[job.url] = fut;
+      fut.then((asset) {
+        if (!job.completer.isCompleted) job.completer.complete(asset);
+      }).whenComplete(() {
+        _inFlight.remove(job.url);
+        _activeCount--;
+        _pump();
+      });
+    }
+  }
+
+  void _rememberFailed(String url) {
+    _failed[url] = true;
+    while (_failed.length > _maxFailedEntries) {
+      _failed.remove(_failed.keys.first);
+    }
+  }
+
+  void _rememberCached(String url, _PcFetchedAsset asset) {
+    _cache[url] = asset;
+    while (_cache.length > _maxCacheEntries) {
+      _cache.remove(_cache.keys.first);
+    }
+  }
+
+  static bool _isSupportedRasterHeader(Uint8List b) {
+    if (b.length < 12) return false;
+    // PNG
+    if (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) return true;
+    // JPEG
+    if (b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) return true;
+    // GIF
+    if (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x38) return true;
+    // WEBP: RIFF....WEBP
+    if (b[0] == 0x52 &&
+        b[1] == 0x49 &&
+        b[2] == 0x46 &&
+        b[3] == 0x46 &&
+        b[8] == 0x57 &&
+        b[9] == 0x45 &&
+        b[10] == 0x42 &&
+        b[11] == 0x50) {
+      return true;
+    }
+    // BMP
+    if (b[0] == 0x42 && b[1] == 0x4D) return true;
+    // ICO
+    if (b[0] == 0x00 && b[1] == 0x00 && b[2] == 0x01 && b[3] == 0x00) return true;
+    return false;
+  }
+
+  static bool _isSvgBytes(Uint8List b, String contentType) {
+    if (contentType.contains('svg')) return true;
+    final headLen = b.length < 256 ? b.length : 256;
+    final head = utf8.decode(Uint8List.sublistView(b, 0, headLen), allowMalformed: true).toLowerCase();
+    return head.contains('<svg');
+  }
+
+  Future<_PcFetchedAsset?> _downloadAndValidate(String rawUrl, int maxBytes) async {
+    try {
+      var currentUri = Uri.tryParse(rawUrl);
+      if (currentUri == null || !currentUri.hasScheme) {
+        _rememberFailed(rawUrl);
+        return null;
+      }
+
+      HttpClientResponse? finalRes;
+      for (var hop = 0; hop < 4; hop++) {
+        final req = await _client.getUrl(currentUri);
+        req.followRedirects = false;
+        pcImageHeadersFor(currentUri.toString()).forEach((k, v) {
+          req.headers.set(k, v);
+        });
+        final res = await req.close().timeout(const Duration(seconds: 8));
+        if (res.statusCode >= 300 && res.statusCode < 400) {
+          final loc = res.headers.value(HttpHeaders.locationHeader);
+          await res.drain<void>();
+          if (loc != null && loc.isNotEmpty) {
+            currentUri = currentUri.resolve(loc);
+            continue;
+          }
+        }
+        finalRes = res;
+        break;
+      }
+
+      if (finalRes == null || finalRes.statusCode != HttpStatus.ok) {
+        if (finalRes != null) await finalRes.drain<void>().catchError((_) {});
+        _rememberFailed(rawUrl);
+        return null;
+      }
+
+      final ct = (finalRes.headers.value(HttpHeaders.contentTypeHeader) ?? '').toLowerCase();
+      if (ct.contains('text/html') || ct.contains('application/json')) {
+        await finalRes.drain<void>().catchError((_) {});
+        _rememberFailed(rawUrl);
+        return null;
+      }
+      if (finalRes.contentLength > maxBytes) {
+        await finalRes.drain<void>().catchError((_) {});
+        _rememberFailed(rawUrl);
+        return null;
+      }
+
+      final builder = BytesBuilder(copy: false);
+      var total = 0;
+      await for (final chunk in finalRes.timeout(const Duration(seconds: 8))) {
+        total += chunk.length;
+        if (total > maxBytes) {
+          _rememberFailed(rawUrl);
+          return null;
+        }
+        builder.add(chunk);
+      }
+      final bytes = builder.toBytes();
+      if (bytes.length < 12) {
+        _rememberFailed(rawUrl);
+        return null;
+      }
+
+      if (_isSupportedRasterHeader(bytes)) {
+        final asset = _PcFetchedAsset(bytes: bytes, isSvg: false);
+        _rememberCached(rawUrl, asset);
+        return asset;
+      }
+
+      if (_isSvgBytes(bytes, ct)) {
+        final asset = _PcFetchedAsset(bytes: bytes, isSvg: true);
+        _rememberCached(rawUrl, asset);
+        return asset;
+      }
+
+      _rememberFailed(rawUrl);
+      return null;
+    } catch (e) {
+      if (e is OutOfMemoryError) {
+        PcTraceLog.write('img: OOM fetching $rawUrl');
+      }
+      _rememberFailed(rawUrl);
+      return null;
+    }
+  }
+}
+
 class PcProgramPoster extends StatefulWidget {
   final String primaryUrl, fallbackUrl, title;
   const PcProgramPoster({
@@ -958,13 +1202,32 @@ class PcProgramPoster extends StatefulWidget {
 
 class _PcProgramPosterState extends State<PcProgramPoster> {
   int _attempt = 0;
+  _PcFetchedAsset? _asset;
+  String _loadedUrl = '';
+  bool _disposed = false;
+  int _loadSeq = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveAsset(syncCall: true);
+  }
 
   @override
   void didUpdateWidget(covariant PcProgramPoster oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.primaryUrl != widget.primaryUrl || oldWidget.fallbackUrl != widget.fallbackUrl) {
       _attempt = 0;
+      _asset = null;
+      _loadedUrl = '';
+      _resolveAsset(syncCall: true);
     }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 
   List<String> get _candidates {
@@ -982,24 +1245,75 @@ class _PcProgramPosterState extends State<PcProgramPoster> {
     return out;
   }
 
+  void _resolveAsset({bool syncCall = false}) {
+    final urls = _candidates;
+    while (_attempt < urls.length) {
+      final url = urls[_attempt];
+      final cached = _PcSafeImageFetcher.instance.getCached(url);
+      if (cached != null) {
+        if (syncCall) {
+          _asset = cached;
+          _loadedUrl = url;
+        } else if (mounted) {
+          setState(() {
+            _asset = cached;
+            _loadedUrl = url;
+          });
+        }
+        return;
+      }
+      if (_PcSafeImageFetcher.instance.isKnownFailed(url)) {
+        _attempt++;
+        continue;
+      }
+      final seq = ++_loadSeq;
+      _PcSafeImageFetcher.instance
+          .fetch(
+            url,
+            maxBytes: 2500 * 1024,
+            isCancelled: () => _disposed || seq != _loadSeq,
+          )
+          .then((asset) {
+        if (_disposed || !mounted || seq != _loadSeq) return;
+        if (asset != null) {
+          setState(() {
+            _asset = asset;
+            _loadedUrl = url;
+          });
+        } else {
+          _attempt++;
+          _resolveAsset();
+        }
+      });
+      return;
+    }
+    if (!syncCall && mounted && _asset != null) {
+      setState(() => _asset = null);
+    }
+  }
+
   Widget _placeholder() {
     return Container(
-      decoration: BoxDecoration(
-        color: const Color(0xFF171C24),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.22), width: 1),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF1D2230), Color(0xFF0D1017)],
+        ),
       ),
-      padding: const EdgeInsets.all(10),
+      alignment: Alignment.center,
+      padding: const EdgeInsets.all(14),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.live_tv_rounded, color: Colors.white54, size: 32),
-          if (widget.title.isNotEmpty) ...[
-            const SizedBox(height: 6),
+          const Icon(Icons.live_tv_rounded, size: 38, color: Color(0xFFE65312)),
+          if (widget.title.trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
             Text(
               widget.title,
               maxLines: 2,
-              overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w600),
             ),
           ],
@@ -1010,33 +1324,27 @@ class _PcProgramPosterState extends State<PcProgramPoster> {
 
   @override
   Widget build(BuildContext context) {
-    final urls = _candidates;
-    if (_attempt >= urls.length) return _placeholder();
-    final url = urls[_attempt];
+    final asset = _asset;
+    if (asset == null) return _placeholder();
     return ColoredBox(
       color: Colors.white,
-      child: Image.network(
-        url,
-        headers: pcImageHeadersFor(url),
-        fit: BoxFit.fill,
-        width: double.infinity,
-        height: double.infinity,
-        cacheWidth: 640,
-        cacheHeight: 360,
-        gaplessPlayback: true,
-        loadingBuilder: (_, child, progress) {
-          if (progress == null) return child;
-          return _placeholder();
-        },
-        errorBuilder: (_, __, ___) {
-          if (_attempt + 1 < urls.length) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) setState(() => _attempt++);
-            });
-          }
-          return _placeholder();
-        },
-      ),
+      child: asset.isSvg
+          ? SvgPicture.memory(
+              asset.bytes,
+              fit: BoxFit.contain,
+              width: double.infinity,
+              height: double.infinity,
+            )
+          : Image.memory(
+              asset.bytes,
+              key: ValueKey(_loadedUrl),
+              fit: BoxFit.fill,
+              width: double.infinity,
+              height: double.infinity,
+              cacheWidth: 640,
+              gaplessPlayback: true,
+              errorBuilder: (_, __, ___) => _placeholder(),
+            ),
     );
   }
 }
@@ -1055,13 +1363,32 @@ class PcChannelLogo extends StatefulWidget {
 
 class _PcChannelLogoState extends State<PcChannelLogo> {
   int _attempt = 0;
+  _PcFetchedAsset? _asset;
+  String _loadedUrl = '';
+  bool _disposed = false;
+  int _loadSeq = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveAsset(syncCall: true);
+  }
 
   @override
   void didUpdateWidget(covariant PcChannelLogo oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.primaryUrl != widget.primaryUrl || oldWidget.fallbackUrl != widget.fallbackUrl) {
       _attempt = 0;
+      _asset = null;
+      _loadedUrl = '';
+      _resolveAsset(syncCall: true);
     }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 
   List<String> get _candidates {
@@ -1082,24 +1409,79 @@ class _PcChannelLogoState extends State<PcChannelLogo> {
     return out;
   }
 
+  void _resolveAsset({bool syncCall = false}) {
+    final urls = _candidates;
+    while (_attempt < urls.length) {
+      final url = urls[_attempt];
+      final cached = _PcSafeImageFetcher.instance.getCached(url);
+      if (cached != null) {
+        if (syncCall) {
+          _asset = cached;
+          _loadedUrl = url;
+        } else if (mounted) {
+          setState(() {
+            _asset = cached;
+            _loadedUrl = url;
+          });
+        }
+        return;
+      }
+      if (_PcSafeImageFetcher.instance.isKnownFailed(url)) {
+        _attempt++;
+        continue;
+      }
+
+      final seq = ++_loadSeq;
+      _PcSafeImageFetcher.instance
+          .fetch(
+            url,
+            maxBytes: 1500 * 1024,
+            isCancelled: () => _disposed || seq != _loadSeq,
+          )
+          .then((asset) {
+        if (_disposed || !mounted || seq != _loadSeq) return;
+        if (asset != null) {
+          setState(() {
+            _asset = asset;
+            _loadedUrl = url;
+          });
+        } else {
+          _attempt++;
+          _resolveAsset();
+        }
+      });
+      return;
+    }
+    if (!syncCall && mounted && _asset != null) {
+      setState(() => _asset = null);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final urls = _candidates;
-    if (_attempt >= urls.length) {
+    final asset = _asset;
+    if (asset == null) {
       return const Center(child: Icon(Icons.tv_rounded, size: 28, color: Color(0xFF163842)));
     }
-    final url = urls[_attempt];
-    return Image.network(
-      url,
-      headers: pcImageHeadersFor(url),
+    if (asset.isSvg) {
+      return SvgPicture.memory(
+        asset.bytes,
+        fit: BoxFit.contain,
+      );
+    }
+    return Image.memory(
+      asset.bytes,
+      key: ValueKey(_loadedUrl),
       fit: BoxFit.contain,
-      cacheWidth: 160,
-      cacheHeight: 160,
+      cacheWidth: 140,
       gaplessPlayback: true,
       errorBuilder: (_, __, ___) {
-        if (_attempt + 1 < urls.length) {
+        if (_attempt + 1 < _candidates.length) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) setState(() => _attempt++);
+            if (!_disposed && mounted) {
+              _attempt++;
+              _resolveAsset();
+            }
           });
         }
         return const Center(child: Icon(Icons.tv_rounded, size: 28, color: Color(0xFF163842)));
