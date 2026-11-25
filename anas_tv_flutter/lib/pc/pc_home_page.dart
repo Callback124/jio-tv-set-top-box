@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'pc_models.dart';
@@ -49,21 +51,27 @@ class _AnasTvPcHomePageState extends State<AnasTvPcHomePage> {
   static const jioHeaders = PcEpgService.jioHeaders;
 
   final ScrollController _gridScroll = ScrollController();
-  final TextEditingController _searchController = TextEditingController();
-  final FocusNode _searchFocus = FocusNode();
   final FocusNode _pageFocus = FocusNode();
+  final Map<int, FocusNode> _tabNodes = {};
+  final Map<int, FocusNode> _cardNodes = {};
+  final VoidCallbackListenable _clearHoverSignal = VoidCallbackListenable();
 
   List<PcChannel> allChannels = [];
   List<String> filterTabs = const ['ALL'];
   String selectedTab = 'ALL';
-  String _searchQuery = '';
   bool loading = true;
   String? error;
   final List<String> _debugErrors = [];
 
+  Timer? _zeroHoldTimer;
+  bool _openedSearchOnHold = false;
+  bool _searchOpen = false;
   String _typedDigits = '';
   String? _digitOsdError;
   Timer? _digitCommitTimer;
+
+  FocusNode _tabNode(int index) => _tabNodes.putIfAbsent(index, () => FocusNode());
+  FocusNode _cardNode(int index) => _cardNodes.putIfAbsent(index, () => FocusNode());
 
   @override
   void initState() {
@@ -73,11 +81,17 @@ class _AnasTvPcHomePageState extends State<AnasTvPcHomePage> {
 
   @override
   void dispose() {
+    _zeroHoldTimer?.cancel();
     _digitCommitTimer?.cancel();
     _gridScroll.dispose();
-    _searchController.dispose();
-    _searchFocus.dispose();
     _pageFocus.dispose();
+    _clearHoverSignal.dispose();
+    for (final n in _tabNodes.values) {
+      n.dispose();
+    }
+    for (final n in _cardNodes.values) {
+      n.dispose();
+    }
     super.dispose();
   }
 
@@ -452,6 +466,11 @@ class _AnasTvPcHomePageState extends State<AnasTvPcHomePage> {
           selectedTab = 'ALL';
         }
       });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _filteredChannels.isNotEmpty) {
+          _focusCard(0);
+        }
+      });
     } catch (e) {
       if (mounted) setState(() => error = e.toString().replaceFirst('Exception: ', ''));
     } finally {
@@ -460,18 +479,53 @@ class _AnasTvPcHomePageState extends State<AnasTvPcHomePage> {
   }
 
   List<PcChannel> get _filteredChannels {
-    Iterable<PcChannel> list = allChannels;
-    if (selectedTab.toUpperCase() != 'ALL') {
-      final target = selectedTab.trim().toLowerCase();
-      list = list.where((c) => c.category.trim().toLowerCase() == target);
+    if (selectedTab.toUpperCase() == 'ALL') return allChannels;
+    final target = selectedTab.trim().toLowerCase();
+    return allChannels
+        .where((c) => c.category.trim().toLowerCase() == target)
+        .toList();
+  }
+
+  int get _selectedTabIndex {
+    final idx = filterTabs.indexWhere((t) => t.toLowerCase() == selectedTab.toLowerCase());
+    return idx >= 0 ? idx : 0;
+  }
+
+  void _focusSelectedTab() {
+    if (filterTabs.isEmpty) return;
+    _clearHoverSignal.trigger();
+    _tabNode(_selectedTabIndex).requestFocus();
+  }
+
+  void _selectTab(String label) {
+    setState(() => selectedTab = label);
+    if (_gridScroll.hasClients) {
+      _gridScroll.jumpTo(0);
     }
-    final q = _searchQuery.trim().toLowerCase();
-    if (q.isNotEmpty) {
-      list = list.where(
-        (c) => c.name.toLowerCase().contains(q) || '${c.channelNumber}'.contains(q),
-      );
+  }
+
+  void _focusCard(int targetIndex) {
+    _clearHoverSignal.trigger();
+    final node = _cardNodes[targetIndex];
+    if (node != null && node.canRequestFocus && node.context != null) {
+      node.requestFocus();
+      return;
     }
-    return list.toList();
+    if (targetIndex == 0 && _gridScroll.hasClients) {
+      _gridScroll.jumpTo(0);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final n = _cardNodes[0];
+        if (n != null && n.canRequestFocus) n.requestFocus();
+      });
+    }
+  }
+
+  int _focusedRestoreIndex() {
+    for (final entry in _cardNodes.entries) {
+      if (entry.value.hasFocus) return entry.key;
+    }
+    return 0;
   }
 
   String? _digitFromKeyEvent(KeyEvent event) {
@@ -498,10 +552,32 @@ class _AnasTvPcHomePageState extends State<AnasTvPcHomePage> {
     return idx != null ? pool[idx].name : null;
   }
 
+  void _clearTypedDigits() {
+    _digitCommitTimer?.cancel();
+    if (_typedDigits.isNotEmpty || _digitOsdError != null) {
+      setState(() {
+        _typedDigits = '';
+        _digitOsdError = null;
+      });
+    }
+  }
+
+  void _appendTypedDigit(String digit) {
+    _digitCommitTimer?.cancel();
+    setState(() {
+      _digitOsdError = null;
+      _typedDigits = _typedDigits.length >= 4 ? digit : '$_typedDigits$digit';
+    });
+    _digitCommitTimer = Timer(const Duration(milliseconds: 1450), _commitHomeTypedChannel);
+  }
+
   void _commitHomeTypedChannel() {
     _digitCommitTimer?.cancel();
     final digits = _typedDigits;
-    if (digits.isEmpty) return;
+    if (digits.isEmpty) {
+      _clearTypedDigits();
+      return;
+    }
     final number = int.tryParse(digits);
     final pool = allChannels.isNotEmpty ? allChannels : _filteredChannels;
     final idx = number != null ? pcResolveChannelIndexByNumber(pool, number) : null;
@@ -515,71 +591,255 @@ class _AnasTvPcHomePageState extends State<AnasTvPcHomePage> {
       });
       return;
     }
+    final restoreIdx = _focusedRestoreIndex();
     setState(() {
       _typedDigits = '';
       _digitOsdError = null;
     });
-    _openChannelPlayer(pool, idx);
+    _openChannelPlayer(pool, idx, restoreCardIndex: restoreIdx);
   }
 
-  void _openChannelPlayer(List<PcChannel> list, int index) {
+  void _openSearchScreen() {
+    if (_searchOpen || allChannels.isEmpty) return;
+    _searchOpen = true;
+    final restoreIndex = _focusedRestoreIndex();
+    Navigator.of(context)
+        .push(PageRouteBuilder<void>(
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: Duration.zero,
+          pageBuilder: (_, __, ___) => AnasTvPcSearchScreen(
+            channels: allChannels,
+            allChannels: allChannels,
+          ),
+        ))
+        .then((_) {
+          _zeroHoldTimer?.cancel();
+          _openedSearchOnHold = false;
+          _searchOpen = false;
+          if (mounted) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) {
+                if (_filteredChannels.isNotEmpty) {
+                  _focusCard(restoreIndex.clamp(0, _filteredChannels.length - 1));
+                } else {
+                  _pageFocus.requestFocus();
+                }
+              }
+            });
+          }
+        });
+  }
+
+  void _openChannelPlayer(List<PcChannel> list, int index, {int? restoreCardIndex}) {
     Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => AnasTvPcPlayerScreen(
+      PageRouteBuilder<void>(
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+        pageBuilder: (_, __, ___) => AnasTvPcPlayerScreen(
           channels: list,
           allChannels: allChannels,
           initialIndex: index,
         ),
       ),
     ).then((_) {
-      if (mounted && !_searchFocus.hasFocus) {
-        _pageFocus.requestFocus();
+      if (mounted) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          if (restoreCardIndex != null && _filteredChannels.isNotEmpty) {
+            _focusCard(restoreCardIndex.clamp(0, _filteredChannels.length - 1));
+          } else {
+            _pageFocus.requestFocus();
+          }
+        });
       }
     });
   }
 
-  KeyEventResult _handlePageKey(FocusNode node, KeyEvent event) {
+  KeyEventResult _handleTabKey(int tabIndex, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter ||
+        key == LogicalKeyboardKey.space) {
+      if (_typedDigits.isNotEmpty) {
+        _commitHomeTypedChannel();
+        return KeyEventResult.handled;
+      }
+      if (tabIndex >= 0 && tabIndex < filterTabs.length) {
+        _selectTab(filterTabs[tabIndex]);
+      }
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      if (tabIndex > 0) {
+        _clearHoverSignal.trigger();
+        _tabNode(tabIndex - 1).requestFocus();
+      }
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowRight) {
+      if (tabIndex + 1 < filterTabs.length) {
+        _clearHoverSignal.trigger();
+        _tabNode(tabIndex + 1).requestFocus();
+      }
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown) {
+      final moved = _tabNode(tabIndex).focusInDirection(TraversalDirection.down);
+      if (!moved && _filteredChannels.isNotEmpty) {
+        _focusCard(0);
+      } else {
+        _clearHoverSignal.trigger();
+      }
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowUp) {
+      _tabNode(tabIndex).focusInDirection(TraversalDirection.up);
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
 
-    if (event.logicalKey == LogicalKeyboardKey.f11) {
+  KeyEventResult _handleCardKey(int index, int columns, int totalCount, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    final row = index ~/ columns;
+    final col = index % columns;
+    final isFirstRowLastItem = row == 0 && (col == columns - 1 || index == totalCount - 1);
+
+    if (key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter) {
+      if (_typedDigits.isNotEmpty) {
+        _commitHomeTypedChannel();
+        return KeyEventResult.handled;
+      }
+      final filtered = _filteredChannels;
+      if (index >= 0 && index < filtered.length) {
+        _openChannelPlayer(filtered, index, restoreCardIndex: index);
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      if (row == 0 && col == 0) {
+        _focusSelectedTab();
+        return KeyEventResult.handled;
+      }
+      if (index > 0) {
+        _focusCard(index - 1);
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowRight) {
+      if (isFirstRowLastItem) {
+        _focusSelectedTab();
+        return KeyEventResult.handled;
+      }
+      if (index + 1 < totalCount) {
+        _focusCard(index + 1);
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowUp) {
+      if (row == 0) {
+        _focusSelectedTab();
+        return KeyEventResult.handled;
+      }
+      _focusCard(index - columns);
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowDown) {
+      if (index + columns < totalCount) {
+        _focusCard(index + columns);
+      } else if ((row + 1) * columns < totalCount) {
+        _focusCard(totalCount - 1);
+      }
+      return KeyEventResult.handled;
+    }
+
+    return KeyEventResult.ignored;
+  }
+
+  KeyEventResult _handlePageKey(FocusNode node, KeyEvent event) {
+    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.f11) {
       PcWindowFullscreen.toggle();
       return KeyEventResult.handled;
     }
 
-    if (_searchFocus.hasFocus) {
-      if (event.logicalKey == LogicalKeyboardKey.escape) {
-        if (_searchQuery.isNotEmpty) {
-          _searchController.clear();
-          setState(() => _searchQuery = '');
+    if (loading || error != null || allChannels.isEmpty) {
+      return KeyEventResult.ignored;
+    }
+
+    final digit = _digitFromKeyEvent(event);
+    if (digit == '0') {
+      if (event is KeyDownEvent) {
+        if (_typedDigits.isNotEmpty) {
+          _zeroHoldTimer?.cancel();
+          _appendTypedDigit('0');
+          return KeyEventResult.handled;
         }
-        _pageFocus.requestFocus();
+        if (!_openedSearchOnHold) {
+          _zeroHoldTimer?.cancel();
+          _zeroHoldTimer = Timer(const Duration(milliseconds: 500), () {
+            _openedSearchOnHold = true;
+            _clearTypedDigits();
+            if (mounted) _openSearchScreen();
+          });
+        }
+        return KeyEventResult.handled;
+      }
+      if (event is KeyRepeatEvent) {
+        if (_typedDigits.isEmpty && !_openedSearchOnHold) {
+          _zeroHoldTimer?.cancel();
+          _openedSearchOnHold = true;
+          _clearTypedDigits();
+          _openSearchScreen();
+        }
+        return KeyEventResult.handled;
+      }
+      if (event is KeyUpEvent) {
+        _zeroHoldTimer?.cancel();
+        if (!_openedSearchOnHold && _typedDigits.isEmpty) {
+          _appendTypedDigit('0');
+        }
+        _openedSearchOnHold = false;
         return KeyEventResult.handled;
       }
       return KeyEventResult.ignored;
     }
 
-    final digit = _digitFromKeyEvent(event);
     if (digit != null) {
-      _digitCommitTimer?.cancel();
-      final nextDigits = _typedDigits.length >= 4 ? digit : '$_typedDigits$digit';
-      setState(() {
-        _typedDigits = nextDigits;
-        _digitOsdError = null;
-      });
-      _digitCommitTimer = Timer(const Duration(milliseconds: 1450), _commitHomeTypedChannel);
+      if (event is KeyDownEvent) {
+        _zeroHoldTimer?.cancel();
+        _appendTypedDigit(digit);
+      }
       return KeyEventResult.handled;
     }
 
-    if (_typedDigits.isNotEmpty &&
-        (event.logicalKey == LogicalKeyboardKey.enter ||
-            event.logicalKey == LogicalKeyboardKey.numpadEnter)) {
-      _commitHomeTypedChannel();
-      return KeyEventResult.handled;
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+
+    if (_typedDigits.isNotEmpty) {
+      final key = event.logicalKey;
+      if (key == LogicalKeyboardKey.select ||
+          key == LogicalKeyboardKey.enter ||
+          key == LogicalKeyboardKey.numpadEnter) {
+        _commitHomeTypedChannel();
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.backspace) {
+        _clearTypedDigits();
+        return KeyEventResult.handled;
+      }
     }
 
     if (event.logicalKey == LogicalKeyboardKey.keyF &&
         HardwareKeyboard.instance.isControlPressed) {
-      _searchFocus.requestFocus();
+      _openSearchScreen();
       return KeyEventResult.handled;
     }
 
@@ -600,7 +860,7 @@ class _AnasTvPcHomePageState extends State<AnasTvPcHomePage> {
             children: [
               Column(
                 children: [
-                  if (!loading && error == null && filterTabs.isNotEmpty)
+                  if (!loading && error == null && filterTabs.length > 1)
                     Padding(
                       padding: const EdgeInsets.only(top: 10),
                       child: Container(
@@ -612,96 +872,22 @@ class _AnasTvPcHomePageState extends State<AnasTvPcHomePage> {
                             bottom: BorderSide(color: Color(0xFF1F1F1F), width: 1),
                           ),
                         ),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              child: Wrap(
-                                spacing: 2,
-                                runSpacing: 2,
-                                children: List.generate(filterTabs.length, (idx) {
-                                  final label = filterTabs[idx];
-                                  final active = label.toLowerCase() == selectedTab.toLowerCase();
-                                  return _PcCategoryTab(
-                                    label: label.toUpperCase(),
-                                    selected: active,
-                                    onTap: () {
-                                      setState(() => selectedTab = label);
-                                      if (_gridScroll.hasClients) _gridScroll.jumpTo(0);
-                                    },
-                                  );
-                                }),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Padding(
-                              padding: const EdgeInsets.only(top: 2, bottom: 4),
-                              child: SizedBox(
-                                width: 220,
-                                height: 34,
-                                child: TextField(
-                                  controller: _searchController,
-                                  focusNode: _searchFocus,
-                                  onChanged: (v) {
-                                    setState(() => _searchQuery = v);
-                                    if (_gridScroll.hasClients) _gridScroll.jumpTo(0);
-                                  },
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 13.5,
-                                    fontWeight: FontWeight.w600,
-                                    letterSpacing: 0.2,
-                                  ),
-                                  cursorColor: const Color(0xFFE65312),
-                                  decoration: InputDecoration(
-                                    hintText: 'Search...',
-                                    hintStyle: const TextStyle(
-                                      color: Color(0xFF8B909E),
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                    prefixIcon: const Icon(
-                                      Icons.search_rounded,
-                                      size: 17,
-                                      color: Color(0xFF8B909E),
-                                    ),
-                                    prefixIconConstraints:
-                                        const BoxConstraints(minWidth: 32, minHeight: 32),
-                                    suffixIcon: _searchQuery.isNotEmpty
-                                        ? IconButton(
-                                            padding: EdgeInsets.zero,
-                                            constraints:
-                                                const BoxConstraints(minWidth: 28, minHeight: 28),
-                                            icon: const Icon(
-                                              Icons.close_rounded,
-                                              size: 16,
-                                              color: Color(0xFF8B909E),
-                                            ),
-                                            onPressed: () {
-                                              _searchController.clear();
-                                              setState(() => _searchQuery = '');
-                                              _pageFocus.requestFocus();
-                                            },
-                                          )
-                                        : null,
-                                    filled: true,
-                                    fillColor: const Color(0xFF0E1015),
-                                    isDense: true,
-                                    contentPadding:
-                                        const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                                    enabledBorder: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(6),
-                                      borderSide: const BorderSide(color: Color(0xFF1F1F1F)),
-                                    ),
-                                    focusedBorder: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(6),
-                                      borderSide: const BorderSide(color: Color(0xFFE65312)),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
+                        child: FocusTraversalGroup(
+                          child: Wrap(
+                            spacing: 2,
+                            runSpacing: 2,
+                            children: List.generate(filterTabs.length, (idx) {
+                              final label = filterTabs[idx];
+                              final active = label.toLowerCase() == selectedTab.toLowerCase();
+                              return _PcCategoryTab(
+                                label: label.toUpperCase(),
+                                selected: active,
+                                focusNode: _tabNode(idx),
+                                onKeyEvent: (_, event) => _handleTabKey(idx, event),
+                                onTap: () => _selectTab(label),
+                              );
+                            }),
+                          ),
                         ),
                       ),
                     ),
@@ -749,47 +935,24 @@ class _AnasTvPcHomePageState extends State<AnasTvPcHomePage> {
                                             style: TextStyle(color: Colors.white),
                                           ),
                                           TextButton(
-                                            onPressed: () {
-                                              _searchController.clear();
-                                              setState(() {
-                                                selectedTab = 'ALL';
-                                                _searchQuery = '';
-                                              });
-                                            },
+                                            onPressed: () => setState(() => selectedTab = 'ALL'),
                                             child: const Text('Show All'),
                                           ),
                                         ],
                                       ),
                                     )
-                                  : LayoutBuilder(
-                                      builder: (context, constraints) {
-                                        final w = constraints.maxWidth;
-                                        final cols = w >= 960 ? 8 : (w >= 680 ? 6 : 4);
-                                        return GridView.builder(
-                                          controller: _gridScroll,
-                                          cacheExtent: 260,
-                                          addAutomaticKeepAlives: false,
-                                          clipBehavior: Clip.none,
-                                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
-                                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                                            crossAxisCount: cols,
-                                            mainAxisSpacing: 7.0,
-                                            crossAxisSpacing: 7.0,
-                                            childAspectRatio: 0.88,
-                                          ),
-                                          itemCount: channels.length,
-                                          itemBuilder: (_, idx) {
-                                            final ch = channels[idx];
-                                            return RepaintBoundary(
-                                              key: ValueKey('ch_${ch.id}_$idx'),
-                                              child: _PcChannelCard(
-                                                channel: ch,
-                                                onTap: () => _openChannelPlayer(channels, idx),
-                                              ),
-                                            );
-                                          },
-                                        );
-                                      },
+                                  : _PcZOrderedChannelGrid(
+                                      channels: channels,
+                                      scrollController: _gridScroll,
+                                      cardNodeFor: _cardNode,
+                                      autofocusFirst: true,
+                                      clearHoverSignal: _clearHoverSignal,
+                                      onCardKeyEvent: _handleCardKey,
+                                      onCardTap: (idx) => _openChannelPlayer(
+                                        channels,
+                                        idx,
+                                        restoreCardIndex: idx,
+                                      ),
                                     ),
                     ),
                   ),
@@ -813,14 +976,22 @@ class _AnasTvPcHomePageState extends State<AnasTvPcHomePage> {
   }
 }
 
+class VoidCallbackListenable extends ChangeNotifier {
+  void trigger() => notifyListeners();
+}
+
 class _PcCategoryTab extends StatefulWidget {
   final String label;
   final bool selected;
+  final FocusNode focusNode;
+  final FocusOnKeyEventCallback onKeyEvent;
   final VoidCallback onTap;
 
   const _PcCategoryTab({
     required this.label,
     required this.selected,
+    required this.focusNode,
+    required this.onKeyEvent,
     required this.onTap,
   });
 
@@ -830,39 +1001,51 @@ class _PcCategoryTab extends StatefulWidget {
 
 class _PcCategoryTabState extends State<_PcCategoryTab> {
   bool _hovered = false;
+  bool _focused = false;
 
   @override
   Widget build(BuildContext context) {
     final active = widget.selected;
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(14, 7, 14, 6),
-          decoration: BoxDecoration(
-            color: _hovered ? const Color(0xFF23262F) : Colors.transparent,
-            border: Border(
-              bottom: BorderSide(
-                color: active ? const Color(0xFFE65312) : Colors.transparent,
-                width: 2.5,
+    final highlighted = _hovered || _focused;
+    return Focus(
+      focusNode: widget.focusNode,
+      onKeyEvent: widget.onKeyEvent,
+      onFocusChange: (v) {
+        if (mounted) setState(() => _focused = v);
+      },
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () {
+            widget.focusNode.requestFocus();
+            widget.onTap();
+          },
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(14, 7, 14, 6),
+            decoration: BoxDecoration(
+              color: highlighted ? const Color(0xFF23262F) : Colors.transparent,
+              border: Border(
+                bottom: BorderSide(
+                  color: active ? const Color(0xFFE65312) : Colors.transparent,
+                  width: 2.5,
+                ),
               ),
             ),
-          ),
-          child: Text(
-            widget.label,
-            maxLines: 1,
-            softWrap: false,
-            style: TextStyle(
-              fontSize: 12.5,
-              letterSpacing: 0.35,
-              fontWeight: active || _hovered ? FontWeight.w700 : FontWeight.w600,
-              color: active
-                  ? const Color(0xFFE65312)
-                  : (_hovered ? Colors.white : const Color(0xFFD0D4DC)),
+            child: Text(
+              widget.label,
+              maxLines: 1,
+              softWrap: false,
+              style: TextStyle(
+                fontSize: 12.5,
+                letterSpacing: 0.35,
+                fontWeight: active || highlighted ? FontWeight.w700 : FontWeight.w600,
+                color: active
+                    ? const Color(0xFFE65312)
+                    : (highlighted ? Colors.white : const Color(0xFFD0D4DC)),
+              ),
             ),
           ),
         ),
@@ -871,95 +1054,866 @@ class _PcCategoryTabState extends State<_PcCategoryTab> {
   }
 }
 
-class _PcChannelCard extends StatefulWidget {
+class _PcOverlayCardData {
+  final int index;
   final PcChannel channel;
+  final LayerLink link;
+  final Size size;
+
+  const _PcOverlayCardData({
+    required this.index,
+    required this.channel,
+    required this.link,
+    required this.size,
+  });
+}
+
+class _PcZOrderedChannelGrid extends StatefulWidget {
+  final List<PcChannel> channels;
+  final ScrollController scrollController;
+  final FocusNode Function(int index) cardNodeFor;
+  final bool autofocusFirst;
+  final VoidCallbackListenable? clearHoverSignal;
+  final KeyEventResult Function(int index, int columns, int totalCount, KeyEvent event) onCardKeyEvent;
+  final void Function(int index) onCardTap;
+
+  const _PcZOrderedChannelGrid({
+    required this.channels,
+    required this.scrollController,
+    required this.cardNodeFor,
+    required this.onCardKeyEvent,
+    required this.onCardTap,
+    this.autofocusFirst = false,
+    this.clearHoverSignal,
+  });
+
+  @override
+  State<_PcZOrderedChannelGrid> createState() => _PcZOrderedChannelGridState();
+}
+
+class _PcZOrderedChannelGridState extends State<_PcZOrderedChannelGrid> {
+  final ValueNotifier<int?> _activeIndex = ValueNotifier<int?>(null);
+  final ValueNotifier<_PcOverlayCardData?> _overlayData = ValueNotifier<_PcOverlayCardData?>(null);
+
+  int? _hoveredIndex;
+  LayerLink? _hoveredLink;
+  Size _hoveredSize = Size.zero;
+
+  int? _focusedIndex;
+  LayerLink? _focusedLink;
+  Size _focusedSize = Size.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.clearHoverSignal?.addListener(_clearHover);
+  }
+
+  @override
+  void didUpdateWidget(covariant _PcZOrderedChannelGrid oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.clearHoverSignal != widget.clearHoverSignal) {
+      oldWidget.clearHoverSignal?.removeListener(_clearHover);
+      widget.clearHoverSignal?.addListener(_clearHover);
+    }
+    if (!listEquals(oldWidget.channels, widget.channels)) {
+      _hoveredIndex = null;
+      _hoveredLink = null;
+      _hoveredSize = Size.zero;
+      if (_focusedIndex != null && _focusedIndex! >= widget.channels.length) {
+        _focusedIndex = null;
+        _focusedLink = null;
+        _focusedSize = Size.zero;
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _syncActive();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.clearHoverSignal?.removeListener(_clearHover);
+    _activeIndex.dispose();
+    _overlayData.dispose();
+    super.dispose();
+  }
+
+  void _clearHover() {
+    if (_hoveredIndex != null) {
+      _hoveredIndex = null;
+      _hoveredLink = null;
+      _hoveredSize = Size.zero;
+      _syncActive();
+    }
+  }
+
+  void _syncActive() {
+    final idx = _hoveredIndex ?? _focusedIndex;
+    _activeIndex.value = idx;
+    if (idx == null || idx < 0 || idx >= widget.channels.length) {
+      _overlayData.value = null;
+      return;
+    }
+    final isHover = _hoveredIndex != null;
+    final link = isHover ? _hoveredLink : _focusedLink;
+    final size = isHover ? _hoveredSize : _focusedSize;
+    if (link == null || size == Size.zero) {
+      _overlayData.value = null;
+      return;
+    }
+    _overlayData.value = _PcOverlayCardData(
+      index: idx,
+      channel: widget.channels[idx],
+      link: link,
+      size: size,
+    );
+  }
+
+  void _handleHoverChanged(int idx, bool hovered, LayerLink link, Size size) {
+    if (hovered) {
+      _hoveredIndex = idx;
+      _hoveredLink = link;
+      if (size != Size.zero) _hoveredSize = size;
+      _syncActive();
+    } else if (_hoveredIndex == idx) {
+      _hoveredIndex = null;
+      _hoveredLink = null;
+      _hoveredSize = Size.zero;
+      _syncActive();
+    }
+  }
+
+  void _handleFocusChanged(int idx, bool focused, LayerLink link, Size size) {
+    if (focused) {
+      _focusedIndex = idx;
+      _focusedLink = link;
+      if (size != Size.zero) _focusedSize = size;
+      _syncActive();
+    } else if (_focusedIndex == idx) {
+      _focusedIndex = null;
+      _focusedLink = null;
+      _focusedSize = Size.zero;
+      _syncActive();
+    }
+  }
+
+  void _handleCardSizeChanged(int idx, LayerLink link, Size size) {
+    var changed = false;
+    if (_hoveredIndex == idx && _hoveredLink == link && _hoveredSize != size) {
+      _hoveredSize = size;
+      changed = true;
+    }
+    if (_focusedIndex == idx && _focusedLink == link && _focusedSize != size) {
+      _focusedSize = size;
+      changed = true;
+    }
+    if (changed) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _syncActive();
+      });
+    }
+  }
+
+  void _handleCardDisposed(int idx, LayerLink link) {
+    if ((_hoveredIndex == idx && _hoveredLink == link) ||
+        (_focusedIndex == idx && _focusedLink == link)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        var changed = false;
+        if (_hoveredIndex == idx && _hoveredLink == link) {
+          _hoveredIndex = null;
+          _hoveredLink = null;
+          _hoveredSize = Size.zero;
+          changed = true;
+        }
+        if (_focusedIndex == idx && _focusedLink == link) {
+          _focusedIndex = null;
+          _focusedLink = null;
+          _focusedSize = Size.zero;
+          changed = true;
+        }
+        if (changed) _syncActive();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final w = constraints.maxWidth;
+        final cols = w >= 960 ? 8 : (w >= 680 ? 6 : 4);
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            GridView.builder(
+              controller: widget.scrollController,
+              cacheExtent: 260,
+              addAutomaticKeepAlives: false,
+              clipBehavior: Clip.none,
+              padding: const EdgeInsets.fromLTRB(14, 14, 14, 16),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: cols,
+                mainAxisSpacing: 7.0,
+                crossAxisSpacing: 7.0,
+                childAspectRatio: 0.88,
+              ),
+              itemCount: widget.channels.length,
+              itemBuilder: (_, idx) {
+                final ch = widget.channels[idx];
+                return RepaintBoundary(
+                  key: ValueKey('ch_${ch.id}_$idx'),
+                  child: _PcChannelCard(
+                    index: idx,
+                    channel: ch,
+                    focusNode: widget.cardNodeFor(idx),
+                    autofocus: widget.autofocusFirst && idx == 0,
+                    activeIndex: _activeIndex,
+                    onKeyEvent: (_, event) {
+                      if (event is KeyDownEvent &&
+                          (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
+                              event.logicalKey == LogicalKeyboardKey.arrowRight ||
+                              event.logicalKey == LogicalKeyboardKey.arrowUp ||
+                              event.logicalKey == LogicalKeyboardKey.arrowDown)) {
+                        _clearHover();
+                      }
+                      return widget.onCardKeyEvent(idx, cols, widget.channels.length, event);
+                    },
+                    onHoverChanged: (hovered, link, size) =>
+                        _handleHoverChanged(idx, hovered, link, size),
+                    onFocusChanged: (focused, link, size) =>
+                        _handleFocusChanged(idx, focused, link, size),
+                    onSizeChanged: (link, size) => _handleCardSizeChanged(idx, link, size),
+                    onDisposed: (link) => _handleCardDisposed(idx, link),
+                    onTap: () => widget.onCardTap(idx),
+                  ),
+                );
+              },
+            ),
+            ValueListenableBuilder<_PcOverlayCardData?>(
+              valueListenable: _overlayData,
+              builder: (context, active, _) {
+                if (active == null) return const SizedBox.shrink();
+                return Positioned(
+                  left: 0,
+                  top: 0,
+                  width: active.size.width,
+                  height: active.size.height,
+                  child: IgnorePointer(
+                    child: CompositedTransformFollower(
+                      key: ValueKey('follower_${active.channel.id}_${active.index}'),
+                      link: active.link,
+                      showWhenUnlinked: false,
+                      targetAnchor: Alignment.topLeft,
+                      followerAnchor: Alignment.topLeft,
+                      child: TweenAnimationBuilder<double>(
+                        key: ValueKey('scale_${active.channel.id}_${active.index}'),
+                        tween: Tween<double>(begin: 1.0, end: 1.16),
+                        duration: const Duration(milliseconds: 85),
+                        curve: Curves.easeOut,
+                        builder: (context, scale, child) => Transform.scale(
+                          scale: scale,
+                          alignment: Alignment.center,
+                          child: child,
+                        ),
+                        child: _PcChannelCardVisual(
+                          channel: active.channel,
+                          highlighted: true,
+                          cardWidth: active.size.width,
+                          cardHeight: active.size.height,
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _PcChannelCard extends StatefulWidget {
+  final int index;
+  final PcChannel channel;
+  final FocusNode focusNode;
+  final bool autofocus;
+  final ValueListenable<int?> activeIndex;
+  final FocusOnKeyEventCallback onKeyEvent;
+  final void Function(bool hovered, LayerLink link, Size size) onHoverChanged;
+  final void Function(bool focused, LayerLink link, Size size) onFocusChanged;
+  final void Function(LayerLink link, Size size) onSizeChanged;
+  final void Function(LayerLink link) onDisposed;
   final VoidCallback onTap;
 
-  const _PcChannelCard({required this.channel, required this.onTap});
+  const _PcChannelCard({
+    required this.index,
+    required this.channel,
+    required this.focusNode,
+    required this.autofocus,
+    required this.activeIndex,
+    required this.onKeyEvent,
+    required this.onHoverChanged,
+    required this.onFocusChanged,
+    required this.onSizeChanged,
+    required this.onDisposed,
+    required this.onTap,
+  });
 
   @override
   State<_PcChannelCard> createState() => _PcChannelCardState();
 }
 
 class _PcChannelCardState extends State<_PcChannelCard> {
-  bool _hovered = false;
+  final LayerLink _layerLink = LayerLink();
+  Size _lastSize = Size.zero;
+  bool _isHighlighted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _isHighlighted = widget.activeIndex.value == widget.index;
+    widget.activeIndex.addListener(_onActiveChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant _PcChannelCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.activeIndex != widget.activeIndex) {
+      oldWidget.activeIndex.removeListener(_onActiveChanged);
+      widget.activeIndex.addListener(_onActiveChanged);
+    }
+    _isHighlighted = widget.activeIndex.value == widget.index;
+  }
+
+  @override
+  void dispose() {
+    widget.activeIndex.removeListener(_onActiveChanged);
+    widget.onDisposed(_layerLink);
+    super.dispose();
+  }
+
+  void _onActiveChanged() {
+    final nowActive = widget.activeIndex.value == widget.index;
+    if (nowActive != _isHighlighted && mounted) {
+      setState(() => _isHighlighted = nowActive);
+    }
+  }
+
+  Size _measureSize() {
+    final ro = context.findRenderObject();
+    if (ro is RenderBox && ro.hasSize) {
+      return ro.size;
+    }
+    return _lastSize;
+  }
+
+  void _ensureVisible() {
+    final ro = context.findRenderObject();
+    if (ro == null || !ro.attached) return;
+    final scrollable = Scrollable.maybeOf(context);
+    if (scrollable == null) return;
+    final viewport = RenderAbstractViewport.maybeOf(ro);
+    if (viewport == null) return;
+    final pos = scrollable.position;
+    final topOffset = viewport.getOffsetToReveal(ro, 0.0).offset - 18.0;
+    final bottomOffset = viewport.getOffsetToReveal(ro, 1.0).offset + 18.0;
+    if (pos.pixels < bottomOffset) {
+      pos.animateTo(
+        bottomOffset.clamp(pos.minScrollExtent, pos.maxScrollExtent),
+        duration: const Duration(milliseconds: 90),
+        curve: Curves.easeOut,
+      );
+    } else if (pos.pixels > topOffset) {
+      pos.animateTo(
+        topOffset.clamp(pos.minScrollExtent, pos.maxScrollExtent),
+        duration: const Duration(milliseconds: 90),
+        curve: Curves.easeOut,
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final activeHighlight = _hovered;
-    final cardColor = activeHighlight ? const Color(0xFFE65312) : const Color(0xFF080808);
     return LayoutBuilder(builder: (context, box) {
-      final w = box.maxWidth;
-      final h = box.maxHeight;
-      final logoSize = math.min(w * 0.68, h * 0.65);
-      final nameSize = (w * 0.13).clamp(9.0, 16.0).toDouble();
-      return AnimatedScale(
-        scale: activeHighlight ? 1.16 : 1.0,
-        duration: const Duration(milliseconds: 85),
-        curve: Curves.easeOut,
-        child: MouseRegion(
-          cursor: SystemMouseCursors.click,
-          onEnter: (_) => setState(() => _hovered = true),
-          onExit: (_) => setState(() => _hovered = false),
-          child: GestureDetector(
-            onTap: widget.onTap,
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(4, 6, 4, 5),
-              decoration: BoxDecoration(
-                color: cardColor,
-                border: activeHighlight
-                    ? null
-                    : Border.all(color: const Color(0xFFD94B0A), width: 1.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  SizedBox(
-                    width: logoSize,
-                    height: logoSize,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF5CCFE0),
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: activeHighlight ? Colors.white : const Color(0xFFD94B0A),
-                          width: 1.1,
-                        ),
-                      ),
-                      clipBehavior: Clip.antiAlias,
-                      padding: EdgeInsets.all(logoSize * 0.08),
-                      child: PcChannelLogo(
-                        primaryUrl: widget.channel.logo,
-                        fallbackUrl: widget.channel.fallbackLogo,
-                      ),
-                    ),
-                  ),
-                  SizedBox(
-                    height: nameSize * 1.38,
-                    width: double.infinity,
-                    child: Center(
-                      child: _PcChannelMarquee(
-                        text: widget.channel.name,
-                        animate: activeHighlight,
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: nameSize,
-                          height: 1.05,
-                          fontWeight: activeHighlight ? FontWeight.w700 : FontWeight.w500,
-                          fontFamily: 'Roboto',
-                          letterSpacing: -0.2,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
+      final size = Size(box.maxWidth, box.maxHeight);
+      if (size != _lastSize) {
+        _lastSize = size;
+        if (_isHighlighted) {
+          widget.onSizeChanged(_layerLink, size);
+        }
+      }
+      return CompositedTransformTarget(
+        link: _layerLink,
+        child: Focus(
+          focusNode: widget.focusNode,
+          autofocus: widget.autofocus,
+          onKeyEvent: widget.onKeyEvent,
+          onFocusChange: (focused) {
+            if (focused) _ensureVisible();
+            widget.onFocusChanged(focused, _layerLink, _measureSize());
+          },
+          child: MouseRegion(
+            cursor: SystemMouseCursors.click,
+            onEnter: (_) => widget.onHoverChanged(true, _layerLink, _measureSize()),
+            onHover: (_) {
+              if (!_isHighlighted) {
+                widget.onHoverChanged(true, _layerLink, _measureSize());
+              }
+            },
+            onExit: (_) => widget.onHoverChanged(false, _layerLink, Size.zero),
+            child: GestureDetector(
+              onTap: widget.onTap,
+              child: _PcChannelCardVisual(
+                channel: widget.channel,
+                highlighted: _isHighlighted,
+                cardWidth: size.width,
+                cardHeight: size.height,
               ),
             ),
           ),
         ),
       );
     });
+  }
+}
+
+class _PcChannelCardVisual extends StatelessWidget {
+  final PcChannel channel;
+  final bool highlighted;
+  final double cardWidth;
+  final double cardHeight;
+
+  const _PcChannelCardVisual({
+    required this.channel,
+    required this.highlighted,
+    required this.cardWidth,
+    required this.cardHeight,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final logoSize = math.min(cardWidth * 0.68, cardHeight * 0.65);
+    final nameSize = (cardWidth * 0.13).clamp(9.0, 16.0).toDouble();
+    final cardColor = highlighted ? const Color(0xFFE65312) : const Color(0xFF080808);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(4, 6, 4, 5),
+      decoration: BoxDecoration(
+        color: cardColor,
+        border: highlighted
+            ? null
+            : Border.all(color: const Color(0xFFD94B0A), width: 1.1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          SizedBox(
+            width: logoSize,
+            height: logoSize,
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF5CCFE0),
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: highlighted ? Colors.white : const Color(0xFFD94B0A),
+                  width: 1.1,
+                ),
+              ),
+              clipBehavior: Clip.antiAlias,
+              padding: EdgeInsets.all(logoSize * 0.08),
+              child: PcChannelLogo(
+                primaryUrl: channel.logo,
+                fallbackUrl: channel.fallbackLogo,
+              ),
+            ),
+          ),
+          SizedBox(
+            height: nameSize * 1.38,
+            width: double.infinity,
+            child: Center(
+              child: _PcChannelMarquee(
+                text: channel.name,
+                animate: highlighted,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: nameSize,
+                  height: 1.05,
+                  fontWeight: highlighted ? FontWeight.w700 : FontWeight.w500,
+                  fontFamily: 'Roboto',
+                  letterSpacing: -0.2,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FocusPcSearchGridIntent extends Intent {
+  const _FocusPcSearchGridIntent();
+}
+
+class AnasTvPcSearchScreen extends StatefulWidget {
+  final List<PcChannel> channels;
+  final List<PcChannel> allChannels;
+
+  const AnasTvPcSearchScreen({
+    super.key,
+    required this.channels,
+    required this.allChannels,
+  });
+
+  @override
+  State<AnasTvPcSearchScreen> createState() => _AnasTvPcSearchScreenState();
+}
+
+class _AnasTvPcSearchScreenState extends State<AnasTvPcSearchScreen> {
+  final TextEditingController _searchController = TextEditingController();
+  late final FocusNode _searchFocus;
+  final ScrollController _gridScroll = ScrollController();
+  final Map<int, FocusNode> _cardNodes = {};
+  final VoidCallbackListenable _clearHoverSignal = VoidCallbackListenable();
+
+  String _query = '';
+  bool _isExiting = false;
+  bool _ignoreInitialZeroKeys = true;
+  late final DateTime _openedAt = DateTime.now();
+  Timer? _zeroGuardTimer;
+
+  FocusNode _cardNode(int index) => _cardNodes.putIfAbsent(index, () => FocusNode());
+
+  bool _isZeroKey(KeyEvent event) {
+    final l = event.logicalKey;
+    final p = event.physicalKey;
+    return l == LogicalKeyboardKey.digit0 ||
+        l == LogicalKeyboardKey.numpad0 ||
+        p == PhysicalKeyboardKey.digit0 ||
+        p == PhysicalKeyboardKey.numpad0;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _zeroGuardTimer = Timer(const Duration(milliseconds: 1200), () {
+      _ignoreInitialZeroKeys = false;
+    });
+    _searchFocus = FocusNode(
+      onKeyEvent: (node, event) {
+        if (_isZeroKey(event) && _ignoreInitialZeroKeys) {
+          if (event is KeyUpEvent) {
+            _ignoreInitialZeroKeys = false;
+            _zeroGuardTimer?.cancel();
+          }
+          return KeyEventResult.handled;
+        }
+        if (_ignoreInitialZeroKeys && event is KeyDownEvent && !_isZeroKey(event)) {
+          _ignoreInitialZeroKeys = false;
+          _zeroGuardTimer?.cancel();
+        }
+        if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.escape) {
+          _exitSearch();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _zeroGuardTimer?.cancel();
+    _searchController.dispose();
+    _searchFocus.dispose();
+    _gridScroll.dispose();
+    _clearHoverSignal.dispose();
+    for (final n in _cardNodes.values) {
+      n.dispose();
+    }
+    super.dispose();
+  }
+
+  List<PcChannel> get _results {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return widget.channels;
+    final starts = <PcChannel>[];
+    final contains = <PcChannel>[];
+    for (final c in widget.channels) {
+      final lower = c.name.toLowerCase();
+      if (lower.startsWith(q)) {
+        starts.add(c);
+      } else if (lower.contains(q)) {
+        contains.add(c);
+      }
+    }
+    return [...starts, ...contains];
+  }
+
+  void _focusCard(int targetIndex) {
+    _clearHoverSignal.trigger();
+    final node = _cardNodes[targetIndex];
+    if (node != null && node.canRequestFocus && node.context != null) {
+      node.requestFocus();
+      return;
+    }
+    if (targetIndex == 0 && _gridScroll.hasClients) {
+      _gridScroll.jumpTo(0);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final n = _cardNodes[0];
+        if (n != null && n.canRequestFocus) n.requestFocus();
+      });
+    }
+  }
+
+  KeyEventResult _handleCardKey(int index, int columns, int totalCount, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    final row = index ~/ columns;
+    final col = index % columns;
+    final isFirstRowLastItem = row == 0 && (col == columns - 1 || index == totalCount - 1);
+
+    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.backspace) {
+      _exitSearch();
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter) {
+      final results = _results;
+      if (index >= 0 && index < results.length) {
+        _openChannel(results, index, restoreCardIndex: index);
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      if (row == 0 && col == 0) {
+        _clearHoverSignal.trigger();
+        _searchFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (index > 0) _focusCard(index - 1);
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowRight) {
+      if (isFirstRowLastItem) {
+        _clearHoverSignal.trigger();
+        _searchFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (index + 1 < totalCount) _focusCard(index + 1);
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowUp) {
+      if (row == 0) {
+        _clearHoverSignal.trigger();
+        _searchFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      _focusCard(index - columns);
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowDown) {
+      if (index + columns < totalCount) {
+        _focusCard(index + columns);
+      } else if ((row + 1) * columns < totalCount) {
+        _focusCard(totalCount - 1);
+      }
+      return KeyEventResult.handled;
+    }
+
+    return KeyEventResult.ignored;
+  }
+
+  void _openChannel(List<PcChannel> channels, int initialIndex, {int? restoreCardIndex}) {
+    if (channels.isEmpty) return;
+    final safeIdx = initialIndex.clamp(0, channels.length - 1);
+    Navigator.of(context)
+        .push(PageRouteBuilder<void>(
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: Duration.zero,
+          pageBuilder: (_, __, ___) => AnasTvPcPlayerScreen(
+            channels: channels,
+            allChannels: widget.allChannels,
+            initialIndex: safeIdx,
+          ),
+        ))
+        .then((_) {
+          if (restoreCardIndex != null && mounted) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) {
+                final results = _results;
+                if (results.isNotEmpty) {
+                  _focusCard(restoreCardIndex.clamp(0, results.length - 1));
+                } else {
+                  _searchFocus.requestFocus();
+                }
+              }
+            });
+          }
+        });
+  }
+
+  void _exitSearch() {
+    if (_isExiting) return;
+    _isExiting = true;
+    FocusScope.of(context).unfocus();
+    if (mounted && Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final results = _results;
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _exitSearch();
+      },
+      child: Focus(
+        canRequestFocus: false,
+        skipTraversal: true,
+        onKeyEvent: (_, event) {
+          if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.f11) {
+            PcWindowFullscreen.toggle();
+            return KeyEventResult.handled;
+          }
+          if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.escape) {
+            _exitSearch();
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        },
+        child: Scaffold(
+          backgroundColor: const Color(0xFF050505),
+          body: SafeArea(
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Container(
+                    height: 46,
+                    width: double.infinity,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF050505),
+                      border: Border(
+                        bottom: BorderSide(color: Color(0xFF1F1F1F), width: 1),
+                      ),
+                    ),
+                    alignment: Alignment.center,
+                    child: Shortcuts(
+                      shortcuts: const <ShortcutActivator, Intent>{
+                        SingleActivator(LogicalKeyboardKey.arrowDown):
+                            _FocusPcSearchGridIntent(),
+                      },
+                      child: Actions(
+                        actions: <Type, Action<Intent>>{
+                          _FocusPcSearchGridIntent: CallbackAction<_FocusPcSearchGridIntent>(
+                            onInvoke: (_) {
+                              if (_results.isNotEmpty) _focusCard(0);
+                              return null;
+                            },
+                          ),
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(24, 4, 24, 0),
+                          child: TextField(
+                            controller: _searchController,
+                            focusNode: _searchFocus,
+                            autofocus: true,
+                            textAlign: TextAlign.center,
+                            textAlignVertical: TextAlignVertical.center,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 0.3,
+                            ),
+                            cursorColor: const Color(0xFFE65312),
+                            textInputAction: TextInputAction.search,
+                            onSubmitted: (_) {
+                              if (_results.isNotEmpty) _focusCard(0);
+                            },
+                            inputFormatters: [
+                              TextInputFormatter.withFunction((oldValue, newValue) {
+                                if (_ignoreInitialZeroKeys &&
+                                    DateTime.now().difference(_openedAt) <
+                                        const Duration(milliseconds: 1200) &&
+                                    oldValue.text.isEmpty &&
+                                    RegExp(r'^0+$').hasMatch(newValue.text)) {
+                                  return oldValue;
+                                }
+                                if (newValue.text.isNotEmpty &&
+                                    !RegExp(r'^0+$').hasMatch(newValue.text)) {
+                                  _ignoreInitialZeroKeys = false;
+                                }
+                                return newValue;
+                              }),
+                            ],
+                            decoration: const InputDecoration(
+                              hintText: 'Search...',
+                              hintStyle: TextStyle(
+                                color: Color(0xFF8B909E),
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              border: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                              enabledBorder: InputBorder.none,
+                              filled: false,
+                              isDense: true,
+                              contentPadding: EdgeInsets.zero,
+                            ),
+                            onChanged: (value) {
+                              setState(() => _query = value);
+                              if (_gridScroll.hasClients) _gridScroll.jumpTo(0);
+                            },
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: ClipRect(
+                    child: results.isEmpty
+                        ? const Center(
+                            child: Text(
+                              'Koi channel nahi mila',
+                              style: TextStyle(color: Colors.white),
+                            ),
+                          )
+                        : _PcZOrderedChannelGrid(
+                            channels: results,
+                            scrollController: _gridScroll,
+                            cardNodeFor: _cardNode,
+                            clearHoverSignal: _clearHoverSignal,
+                            onCardKeyEvent: _handleCardKey,
+                            onCardTap: (idx) => _openChannel(
+                              results,
+                              idx,
+                              restoreCardIndex: idx,
+                            ),
+                          ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
